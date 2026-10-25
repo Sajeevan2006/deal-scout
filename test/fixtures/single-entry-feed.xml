@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en">
+	<link rel="self" type="application/atom+xml" href="https://forums.redflagdeals.com/feed/forum/9" />
+
+	<title>redflagdeals.com Forums - Hot Deals</title>
+	<link href="https://forums.redflagdeals.com" />
+	<updated>2026-10-25T13:55:00-04:00</updated>
+	<author><name><![CDATA[redflagdeals.com]]></name></author>
+	<id>https://forums.redflagdeals.com/feed/forum/9</id>
+
+		<entry>
+		<author><name><![CDATA[efrivela]]></name></author>
+		<updated>2026-10-25T13:55:00-04:00 </updated>
+
+		<published>2026-10-25T09:43:50-04:00</published>
+		<id>https://forums.redflagdeals.com/viewtopic.php?t=2830051&amp;p=41325378#p41325378</id>
+		<link href="https://forums.redflagdeals.com/viewtopic.php?t=2830051&amp;p=41325378#p41325378"/>
+		<title type="html"><![CDATA[[Amazon.com] UGREEN Nexode 100W 5-Port GaN USB-C Charger | $39.99]]></title>
+
+					<category term="Hot Deals" scheme="https://forums.redflagdeals.com/viewforum.php?f=9" label="Hot Deals"/>
+							<media:content url="https://e.dam-img.rfdcontent.com/cms/012/138/004/1200x1200_smart_fit.jpg" medium="image" type="image/jpeg"/>
+			<media:thumbnail url="https://e.dam-img.rfdcontent.com/cms/012/138/004/600x600_smart_fit.jpg"/>
+			<link rel="enclosure" type="image/jpeg" href="https://e.dam-img.rfdcontent.com/cms/012/138/004/1200x1200_smart_fit.jpg"/>
+
+		<content type="html" xml:base="https://forums.redflagdeals.com/viewtopic.php?t=2830051&amp;p=41325378#p41325378"><![CDATA[
+Can charge 65w and 30w concurrently which works for my laptop/phone but may not for others <br><br>Seems like a decent price but noting reviews call out some issues<p>Statistics: Posted by <a href="https://forums.redflagdeals.com/memberlist.php?mode=viewprofile&amp;u=87521">efrivela</a> — Oct 25th, 2026 9:43 am</p><hr />
+]]></content>
+	</entry>
+	</feed>

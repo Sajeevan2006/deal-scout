@@ -1,0 +1,117 @@
+{
+  "watches": [
+    {
+      "label": "portable charger",
+      "request": "portable charger"
+    },
+    {
+      "label": "RTX 4070 graphics card",
+      "request": "desktop graphics card RTX 4070 family under $700"
+    },
+    {
+      "label": "noise cancelling headphones",
+      "request": "noise cancelling headphones"
+    },
+    {
+      "label": "air fryer",
+      "request": "air fryer"
+    }
+  ],
+  "posts": [
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830037&p=41325212#p41325212",
+      "title": "[Best Buy] Lenovo ThinkPad E14 Gen 7 14\" FHD+ Touch Copilot+ PC, Intel Core Ultra 7 258V, 32GB LPDDR5x, 1TB SSD, Intel Arc Graphics",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830040&p=41325255#p41325255",
+      "title": "[Walmart] Nintendo-Switch-2-The-Legend-of-Zelda-40th-Anniversary-Edition/",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830041&p=41325256#p41325256",
+      "title": "[Canadian Tire] $99.99 MAXIMUM Tire Change Kit, 9-pc",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830051&p=41325378#p41325378",
+      "title": "[Amazon.com] UGREEN Nexode 100W 5-Port GaN USB-C Charger | $39.99",
+      "shouldMatch": [],
+      "reviewed": false,
+      "note": "Draft: GaN wall charger, not a power bank. Add 'portable charger' if you count wall chargers."
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830052&p=41325429#p41325429",
+      "title": "[Walmart] 13-inch iPad Pro Wi-Fi 256GB $1,798.98",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830054&p=41325451#p41325451",
+      "title": "Spier & Mackay Warehouse Sale",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830059&p=41325571#p41325571",
+      "title": "[Flo] Flo EV Charger Program - Starts November 2",
+      "shouldMatch": [],
+      "reviewed": false,
+      "note": "Draft: EV charging rewards program. Shares the word 'charger' but is not a match."
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830061&p=41325612#p41325612",
+      "title": "[Amazon.ca] Nexcare™ Fabric Bandages HD202-CA, Assorted Sizes, 40 for $0.97 ATL",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830064&p=41325624#p41325624",
+      "title": "[Staples] ASUS RT-BE86U BE6800 Dual Band WiFi 7 Smart AiMesh Extendable Router ($279.99 in store only)",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830067&p=41325667#p41325667",
+      "title": "[Costco] Bose QuietComfort SE Headphones",
+      "shouldMatch": [
+        "noise cancelling headphones"
+      ],
+      "reviewed": false,
+      "note": "Draft: QuietComfort is Bose's noise cancelling line."
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830068&p=41325682#p41325682",
+      "title": "[Amazon.ca] 35% off Ethical Bean Whole Bean coffee (907g) w/ 1st Subscribe & Save (~$16.50)",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830074&p=41325816#p41325816",
+      "title": "[Rogers] Rogers Red wireless CAA member Google pixel",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830079&p=41325848#p41325848",
+      "title": "[Costco] Panasonic SD-R2550S automatic breadmaker in-store clearance $149.97",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830081&p=41325926#p41325926",
+      "title": "[Rona] Google Nest Temperature Sensor (1st gen) - 3-Pack",
+      "shouldMatch": [],
+      "reviewed": false
+    },
+    {
+      "id": "https://forums.redflagdeals.com/viewtopic.php?t=2830082&p=41325979#p41325979",
+      "title": "[Costco] Ninja Dual Brew Coffee Maker",
+      "shouldMatch": [],
+      "reviewed": false
+    }
+  ]
+}

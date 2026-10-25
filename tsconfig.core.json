@@ -1,0 +1,9 @@
+{
+  // Core only sees web standard globals (no Node types), so a stray fs/path/process import fails typecheck.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "WebWorker"],
+    "types": []
+  },
+  "include": ["src/core"]
+}

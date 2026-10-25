@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand edited from a real capture: entry 2 has no <id>, entry 3 has no <title>, entry 4 only has an enclosure link -->
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en">
+	<link rel="self" type="application/atom+xml" href="https://forums.redflagdeals.com/feed/forum/9" />
+	<title>redflagdeals.com Forums - Hot Deals</title>
+	<updated>2026-10-25T18:37:46-04:00</updated>
+	<id>https://forums.redflagdeals.com/feed/forum/9</id>
+
+		<entry>
+		<author><name><![CDATA[forevergone]]></name></author>
+		<updated>2026-10-25T18:37:46-04:00</updated>
+		<published>2026-10-25T18:37:46-04:00</published>
+		<id>https://forums.redflagdeals.com/viewtopic.php?t=2830082&amp;p=41325979#p41325979</id>
+		<link href="https://forums.redflagdeals.com/viewtopic.php?t=2830082&amp;p=41325979#p41325979"/>
+		<title type="html"><![CDATA[[Costco] Ninja Dual Brew Coffee Maker]]></title>
+		<content type="html"><![CDATA[
+Found at Elgin Mills Costco<p>Statistics: Posted by <a href="https://forums.redflagdeals.com/memberlist.php?mode=viewprofile&amp;u=91409">forevergone</a> — Oct 25th, 2026 6:37 pm</p><hr />
+]]></content>
+	</entry>
+		<entry>
+		<author><name><![CDATA[manga]]></name></author>
+		<updated>2026-10-25T17:27:33-04:00 </updated>
+		<published>2026-10-25T17:25:37-04:00</published>
+		<link href="https://forums.redflagdeals.com/viewtopic.php?t=2830081&amp;p=41325926#p41325926"/>
+		<title type="html"><![CDATA[[Rona] Google Nest Temperature Sensor (1st gen) - 3-Pack]]></title>
+		<content type="html"><![CDATA[3 for $64, usually it's $129.]]></content>
+	</entry>
+		<entry>
+		<author><name><![CDATA[aayushsb]]></name></author>
+		<published>2026-10-25T16:01:23-04:00</published>
+		<id>https://forums.redflagdeals.com/viewtopic.php?t=2830079&amp;p=41325848#p41325848</id>
+		<link href="https://forums.redflagdeals.com/viewtopic.php?t=2830079&amp;p=41325848#p41325848"/>
+		<content type="html"><![CDATA[Panasonic breadmaker clearance]]></content>
+	</entry>
+		<entry>
+		<author><name><![CDATA[DealBust]]></name></author>
+		<published>2026-10-25T15:39:25-04:00</published>
+		<id>https://forums.redflagdeals.com/viewtopic.php?t=2830074&amp;p=41325816#p41325816</id>
+		<link rel="enclosure" type="image/jpeg" href="https://c.dam-img.rfdcontent.com/cms/012/138/026/1200x1200_smart_fit.jpg"/>
+		<title type="html"><![CDATA[[Rogers] Rogers Red wireless CAA member Google pixel]]></title>
+	</entry>
+		<entry>
+		<author><name><![CDATA[apvm]]></name></author>
+		<published>not a date</published>
+		<id>https://forums.redflagdeals.com/viewtopic.php?t=2830064&amp;p=41325624#p41325624</id>
+		<link href="https://forums.redflagdeals.com/viewtopic.php?t=2830064&amp;p=41325624#p41325624"/>
+		<title type="html"><![CDATA[[Staples] ASUS RT-BE86U Router ($279.99 in store only)]]></title>
+	</entry>
+	</feed>

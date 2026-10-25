@@ -1,0 +1,39 @@
+{
+  "name": "deal-scout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal RedFlagDeals Hot Deals watcher (phase 1, local core)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "watch:add": "tsx src/local/cli.ts watch:add",
+    "watch:list": "tsx src/local/cli.ts watch:list",
+    "watch:remove": "tsx src/local/cli.ts watch:remove",
+    "check": "tsx src/local/cli.ts check",
+    "check:loop": "tsx src/local/cli.ts check:loop",
+    "feedback": "tsx src/local/cli.ts feedback",
+    "feed:capture": "tsx scripts/captureFeed.ts",
+    "titles:collect": "tsx scripts/collectTitles.ts",
+    "labels:sync": "tsx scripts/syncLabels.ts",
+    "eval": "tsx scripts/eval.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.core.json"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "fast-xml-parser": "^5.11.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.2": true
+  }
+}

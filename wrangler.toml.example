@@ -1,0 +1,29 @@
+# NOT USED YET. Phase 1 runs locally on Node and nothing here is deployed.
+# This shows roughly what the Cloudflare Worker config will look like later.
+# Copy to wrangler.toml only when the D1, Workers AI and Telegram adapters exist.
+
+name = "deal-scout"
+main = "src/core/worker.ts"
+compatibility_date = "2026-10-01"
+
+# Check the feed every 10 minutes (never go under 2)
+[triggers]
+crons = ["*/10 * * * *"]
+
+# D1 database, exposed to the worker as env.DB
+[[d1_databases]]
+binding = "DB"
+database_name = "deal-scout"
+database_id = "<fill in after: wrangler d1 create deal-scout>"
+migrations_dir = "migrations"
+
+# Workers AI for embeddings and the LLM calls, exposed as env.AI
+[ai]
+binding = "AI"
+
+[vars]
+CONTACT_EMAIL = "me@example.com"
+
+# Secrets go in with `wrangler secret put` (or .dev.vars locally), never in this file:
+#   TELEGRAM_BOT_TOKEN
+#   TELEGRAM_CHAT_ID
