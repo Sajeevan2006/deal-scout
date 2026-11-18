@@ -1,154 +1,302 @@
 # Deal Scout
 
-> **Private personal project, for learning only.** It reads only the public RedFlagDeals Hot Deals Atom feed
-> (`https://forums.redflagdeals.com/feed/forum/9`) at a low polling rate: never more than once every 2 minutes,
-> every 10 minutes by default. It never scrapes forum pages. Not to be shared or used commercially.
+> **Personal project, for learning only.** It reads only the public RedFlagDeals Hot Deals Atom feed
+> (`https://forums.redflagdeals.com/feed/forum/9`), at most once every 2 minutes and every 10 minutes by default.
+> It never scrapes forum pages. Not for commercial use.
 
-Deal Scout watches the Hot Deals forum and alerts you when a new post matches something you asked for. Matching is
-meant to be about intent, not keywords: "portable charger" should eventually match "[Amazon] Anker 20000mAh Power
-Bank $29".
+Deal Scout watches the RFD Hot Deals forum and sends you a Telegram message when a new post matches something you
+asked for. Matching is by meaning, not keywords: "portable charger" matches "[Amazon] Anker 20000mAh Power Bank $29".
 
-This is **phase 1**: the whole pipeline runs locally in TypeScript. The LLM, embedding, Telegram and Cloudflare
-parts are interfaces with simple local placeholders, so they can be swapped in later without touching the core.
+- You send the bot what you want, in plain words: *portable charger under $40, no cables*
+- An LLM turns that into a watch (description, synonyms, brands, price limit, excluded words)
+- Every 10 minutes a Cloudflare cron checks the feed, embeds new posts, scores them against your watches, and asks an
+  LLM to double check the borderline ones
+- Matches arrive in Telegram with 👍 / 👎 buttons. Enough 👎 makes a watch stricter.
 
-## Architecture
+Everything runs on the **Cloudflare free plan** (Workers, D1, Workers AI). Each deployment belongs to one person: clone
+it, deploy it to your own Cloudflare account, pair your own Telegram bot.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Setup](#setup) (about 15 minutes)
+- [Telegram](#telegram)
+- [Using Claude instead of Workers AI](#using-claude-instead-of-workers-ai-optional)
+- [Admin API and the remote CLI](#admin-api-and-the-remote-cli)
+- [Tuning thresholds with the eval](#tuning-thresholds-with-the-eval)
+- [Staying inside the free plan](#staying-inside-the-free-plan)
+- [Being a good citizen with the feed](#being-a-good-citizen-with-the-feed)
+- [Local development](#local-development)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
+
+## How it works
 
 ```
- npm run check / check:loop          (later: Cloudflare cron -> worker.scheduled)
-        |
-        v
- FeedSource ---> parseFeed ---> drop seen ---> matchPosts ---> alert dedupe ---> Notifier
- live or file    Atom -> Post   seen_posts       |             alerts table      console now,
- 2 min guard                                     |                               Telegram later
- conditional GET                                 +-- Embedder (one batch per check)
-                                                 +-- hard filters (excludes, store, max price)
-                                                 +-- BorderlineJudge (in-between scores only)
+Cron every 10 min ─► fetch feed ─► parse ─► new posts only ─► embed (1 batch) ─► score vs watches ─► alerts ─► Telegram
+                     304 aware      Atom     seen_posts          Workers AI        hard filters        dedupe
+                     2 min guard                                 bge-base          judge (LLM) for     👍/👎 buttons
+                                                                                   borderline scores
 
- All state goes through Database (D1 shaped). SQLite now, D1 later.
-
- npm run watch:add -> createWatch -> WatchPlanner (stub now, LLM later) -> Embedder -> watches
+Telegram message ─► webhook (secret checked) ─► LLM planner ─► embed intent once ─► watches table
 ```
 
 How a check works:
 
-1. Load the feed state (Last-Modified, ETag, last request time) from `feed_state`.
-2. Fetch the feed through a `FeedSource`. Anything other than a fresh feed (304, guard refusal, 429, block, error) ends the run early with a clear message.
-3. Parse the Atom entries into `Post`s and drop the ones already in `seen_posts`.
-4. Record the new posts as seen.
-5. Embed all new posts in one batch, score each against every active watch, apply hard filters, then decide:
-   score >= `highThreshold` alerts, score < `lowThreshold` skips, anything in between goes to the `BorderlineJudge`.
-6. For each alert, claim the (watch, post) pair in `alerts` (unique constraint), then send it. A pair is never alerted twice.
-7. Save the new Last-Modified/ETag only after everything worked, then return a summary.
+1. Fetch the feed with `If-Modified-Since`. Anything other than a fresh feed (304, too soon, 429, block, error) ends
+   the run. A cron run never sleeps to retry, the next run 10 minutes later does.
+2. Parse the Atom entries and keep the posts not in `seen_posts`.
+3. Re-embed any watch whose vector came from a different embedding model (after changing models).
+4. Embed all new posts in one Workers AI call and score each against each active watch (cosine similarity).
+5. Hard filters: excluded words, stores, max price.
+6. Score ≥ `high` alerts, score < `low` skips, anything in between goes to the LLM judge (within per run and per day
+   caps).
+7. Each (watch, post) pair is claimed in `alerts` (unique constraint) before sending, so nothing is alerted twice.
+8. Only after matching and sending worked are the posts marked seen and `Last-Modified` saved. If embedding fails or
+   an alert can't be sent, those posts are retried next run instead of being lost.
 
-On the very first run (empty `seen_posts`) everything currently in the feed is marked seen without alerting,
-unless you pass `--alert-existing`.
-
-### Layout
-
-- `src/core/` is runtime agnostic: no `fs`, `path`, `process` or other Node APIs, only web standard globals like `fetch`. `tsconfig.core.json` typechecks it with no Node types, and `test/coreBoundary.test.ts` checks the imports too.
-- `src/local/` has the Node adapters and placeholders, plus the CLI.
-- `scripts/` has capture, title collection, label sync and eval.
-- `migrations/` has SQL that works in both SQLite and D1.
-
-### Ports and what stands in for them right now
-
-| Port (`src/core/ports`) | Phase 1 placeholder (`src/local`) | Later |
-| --- | --- | --- |
-| `Database` | `sqliteDatabase.ts` (better-sqlite3, runs `migrations/` on start, file at `data/deal-scout.db`) | Cloudflare D1 (`env.DB`, same shape) |
-| `FeedSource` | `liveFeedSource.ts` (real feed via core `fetchFeed`), `fileFeedSource.ts` (saved captures, offline) | same core `fetchFeed` inside the Worker |
-| `Embedder` | `fakeEmbedder.ts`: hashed bag of words, 256 dims, L2 normalized. **Only captures word overlap, not meaning.** | Workers AI embedding model |
-| `WatchPlanner` | `stubWatchPlanner.ts`: rules that pull out `$` max price and "no/not/without" excludes | LLM with tool calling (`create_watch` etc. in `watchTools.ts`) |
-| `BorderlineJudge` | `stubBorderlineJudge.ts`: always says no, logs each call so you can see how often the real model would run | small LLM yes/no call |
-| `Notifier` | `consoleNotifier.ts`: prints title, store, price, score, tags, link and the feedback command | Telegram bot |
-| `Clock` | `systemClock` | same |
-
-Every spot where a real integration goes is marked `TODO(integration)`. Run `grep -rn "TODO(integration)" src` to list them.
+On the very first run everything already in the feed is marked seen without alerting.
 
 ## Setup
 
-Needs Node 20 or newer (tested on Node 24).
+You need Node 20 or newer, and a free [Cloudflare account](https://dash.cloudflare.com/sign-up). Telegram can wait until
+later: without it, alerts go to the Worker logs.
+
+**1. Install**
 
 ```bash
+git clone https://github.com/<you>/deal-scout.git
+cd deal-scout
 npm install
+npx wrangler login
 ```
 
-npm 11 blocks install scripts by default. `package.json` already allows the two that are needed (`better-sqlite3`
-for its native binary and `esbuild` for `tsx`/`vitest`). If `better-sqlite3` fails to load, run `npm rebuild better-sqlite3`.
-
-Set a real contact for the User-Agent so RFD can reach you if something goes wrong:
+**2. Create the database and your config**
 
 ```bash
-export DEAL_SCOUT_CONTACT="you@example.com"   # UA becomes: DealScout/0.1 (personal use, contact you@example.com)
+npx wrangler d1 create deal-scout
+cp wrangler.toml.example wrangler.toml
 ```
 
-## Scripts
+In `wrangler.toml`, paste the `database_id` printed by the first command and set `CONTACT_EMAIL` to a real address
+(it goes in the User-Agent so RFD can reach you if something goes wrong). `wrangler.toml` is gitignored.
 
-| Command | What it does |
+**3. Create the tables**
+
+```bash
+npm run db:migrate:remote
+```
+
+**4. Set the secrets**
+
+```bash
+npx wrangler secret put ADMIN_TOKEN    # protects the /api admin endpoints
+npx wrangler secret put PAIRING_CODE   # you send /start <PAIRING_CODE> to your bot once to claim it
+```
+
+Use long random values, for example from `node -e "console.log(crypto.randomUUID())"`.
+
+**5. Deploy**
+
+```bash
+npm run deploy
+```
+
+Note the URL it prints, like `https://deal-scout.<your-subdomain>.workers.dev`. The cron starts right away.
+
+**6. Talk to it from your machine**
+
+```bash
+cp .env.example .env
+```
+
+Set `WORKER_URL` and `ADMIN_TOKEN` in `.env`, then:
+
+```bash
+npm run status                                         # feed state, watches, AI settings, Telegram pairing
+npm run remote -- watch "portable charger under \$40, no cables"
+npm run remote -- watches
+npm run logs                                           # live Worker logs, alerts show up here until Telegram is set up
+```
+
+That's a working deployment. Next, set up Telegram so alerts reach your phone.
+
+## Telegram
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot` and follow the prompts. It gives you a
+   bot token like `123456789:AA...`.
+2. Store the token, plus a webhook secret of your choice (letters, digits, `_` and `-` only):
+
+   ```bash
+   npx wrangler secret put TELEGRAM_BOT_TOKEN
+   npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+   ```
+
+3. Register the webhook and the bot's command menu. The Worker makes these calls itself, so the token never leaves
+   Cloudflare:
+
+   ```bash
+   npm run telegram:setup
+   ```
+
+4. Open your bot in Telegram and send `/start <your PAIRING_CODE>`. That chat becomes the owner. Every other chat is
+   turned away.
+5. Send what you're looking for, like `air fryer under $100`.
+
+Bot commands:
+
+| Message | What it does |
 | --- | --- |
-| `npm run watch:add -- "<request>"` | Create a watch for the default local user, e.g. `npm run watch:add -- "portable charger under $40, no cables"` |
-| `npm run watch:list` | List watches with their parsed price, excludes, stores and thresholds |
-| `npm run watch:remove -- <watchId>` | Deactivate a watch |
-| `npm run check` | One check against the live feed (obeys the 2 minute guard) |
-| `npm run check -- --file <path>` | One check against a saved capture, fully offline |
-| `npm run check -- --force` | Skip the 2 minute guard once (does not override a 429 back off) |
-| `npm run check -- --alert-existing` | On a first run, alert on posts already in the feed |
-| `npm run check -- --verbose` | Also print every match decision (score, reason) |
-| `npm run check -- --save-captures` | Also save each fresh live feed to `data/captures/` |
-| `npm run check:loop` | Repeat the live check every 10 minutes. `-- --interval-minutes <n>` changes it, under 2 is refused. Stops if RFD blocks us |
-| `npm run feed:capture` | Fetch the live feed once (guarded) and save it to `data/captures/feed-<timestamp>.xml`. The first capture is also copied to `test/fixtures/hot-deals-feed.xml` |
-| `npm run titles:collect` | Merge all captures into `data/collected-titles.json`, deduped by post id |
-| `npm run labels:sync` | Add newly collected titles to `data/labeled-posts.json` as unreviewed |
-| `npm run feedback -- <alertId> up\|down` | Record feedback for an alert and maybe raise that watch's high threshold |
-| `npm run eval` | Precision, recall, false positives and false negatives per eval watch |
-| `npm test` | Run the tests (never touches the network) |
-| `npm run typecheck` | Typecheck everything, plus `src/core` on its own without Node types |
+| any text, or `/watch <text>` | Create a watch |
+| `/list` | Your watches, with remove buttons |
+| `/remove <id>` | Stop a watch |
+| `/help` | How it works |
+| 👍 / 👎 on an alert | Rate it. 3 or more 👎 just above a watch's threshold raises that threshold |
+
+To move the bot to another chat: `npm run remote -- telegram:unpair`, then `/start <PAIRING_CODE>` from the new chat.
+
+## Using Claude instead of Workers AI (optional)
+
+Workers AI handles the planner and judge for free. To use Claude Haiku instead:
+
+```toml
+# wrangler.toml [vars]
+LLM_PROVIDER = "anthropic"
+```
+
+```bash
+npx wrangler secret put ANTHROPIC_API_KEY
+npm run deploy
+```
+
+It defaults to `claude-haiku-5-5` (override with `PLANNER_MODEL` / `JUDGE_MODEL`). At Deal Scout's volume that's
+fractions of a cent a day. Embeddings stay on Workers AI either way.
+
+## Admin API and the remote CLI
+
+All `/api` routes need `Authorization: Bearer <ADMIN_TOKEN>`. `npm run remote -- <command>` wraps them using
+`WORKER_URL` and `ADMIN_TOKEN` from `.env`.
+
+| `npm run remote --` | Route | What it does |
+| --- | --- | --- |
+| `status` | `GET /api/status` | Feed state, watch count, judge calls today, AI settings, Telegram state |
+| `watches` | `GET /api/watches` | List watches |
+| `watch "<request>"` | `POST /api/watches` | Create a watch, body `{"text": "..."}` |
+| `remove <id>` | `DELETE /api/watches/<id>` | Stop a watch |
+| `thresholds <id> <high> <low>` | `POST /api/watches/<id>/thresholds` | Set a watch's thresholds |
+| `check [--force] [--alert-existing]` | `POST /api/check` | Run a check now (obeys the 2 minute guard unless `--force`, never overrides a 429) |
+| `feedback <alertId> up\|down` | `POST /api/feedback` | Rate an alert |
+| `unblock` | `POST /api/unblock` | Allow live fetches again after RFD blocked one. Find out why first |
+| `telegram:setup` | `POST /api/telegram/setup` | Register the webhook and commands |
+| `telegram:status` | `GET /api/telegram/status` | Webhook info and pairing state |
+| `telegram:unpair` | `POST /api/telegram/unpair` | Forget the owner chat |
+| (labels:pull) | `GET /api/posts?days=30` | Posts the bot has seen, with the start of each body |
+
+`npm run status` and `npm run telegram:setup` are shortcuts for the matching `remote` commands.
+
+## Tuning thresholds with the eval
+
+Each watch has a `high` and `low` threshold. The defaults for `bge-base-en-v1.5` (0.8 / 0.6) are deliberately
+conservative starting guesses: the judge covers the band in between, and 👎 feedback can only raise thresholds. Measure
+them on real posts once you have some:
+
+1. Let the deployed bot run for a few days. It stores the title and the start of every post it sees.
+2. `npm run labels:pull` copies those posts into `data/collected-titles.json`.
+3. `npm run labels:sync` adds them to `data/labeled-posts.json` as unreviewed.
+4. Review `data/labeled-posts.json`: put the matching watch labels in `shouldMatch` and set `"reviewed": true`. The
+   eval watches are listed at the top of the file. Change them to things you actually want.
+5. Add `CLOUDFLARE_ACCOUNT_ID` and `WORKERS_AI_API_TOKEN` to `.env` (see `.env.example`), then `npm run eval`.
+
+The eval prints precision, recall, false positives and negatives per watch, the score spread of positives and
+negatives, and a threshold sweep with suggested `high` / `low` values. Useful flags:
+
+- `--judge`: also run the LLM judge on borderline scores
+- `--planner rules|llm`: how watch descriptions are written (LLM plans are cached in `data/eval-plans.json`)
+- `--query-prefix`: try bge's recommended search prefix on watch descriptions
+- `--embedder fake`: run fully offline
+- `--include-unreviewed`: preview with draft labels
+
+Apply what you learn with `HIGH_THRESHOLD` / `LOW_THRESHOLD` in `wrangler.toml` (new watches) or
+`npm run remote -- thresholds <id> <high> <low>` (existing ones). The eval matches on title + body snippet, like
+the Worker.
+
+## Staying inside the free plan
+
+| Limit (free plan) | What Deal Scout does |
+| --- | --- |
+| **10 ms CPU per invocation** | Purpose built Atom reader instead of an XML library, embeddings stored as base64 float32 (cheap to decode), per post and per watch filter work cached. `npm run bench` measures it: about 6 ms worst case (15 new posts × 20 watches, cold), far less on a normal run with 0–3 new posts, and near zero on a 304. Real numbers: dashboard → Workers → deal-scout → Metrics → CPU time. |
+| **50 D1 queries per invocation** | Bulk statements (`json_each`) for seen posts. A typical run uses about 12 queries plus one per alert. |
+| **D1 rows read per day** | No `COUNT(*)` over growing tables. Seen posts are pruned after 30 days. |
+| **10,000 Workers AI neurons per day** | Estimated about 2,000 a day for one person with ~10 watches: embedding ~150 posts costs ~100 neurons, a judge call ~10, a new watch ~110. Judge calls are capped at 8 per run and 300 per day (`MAX_JUDGE_CALLS_PER_RUN` / `_PER_DAY`). Over the cap, borderline posts are skipped and the run says so. |
+| **5 cron triggers** | One, every 10 minutes. |
+
+If you ever outgrow it, Workers Paid ($5/month) raises the cron CPU limit to 30 seconds. Nothing else changes.
 
 ## Being a good citizen with the feed
 
-- Only the Atom feed URL is ever requested, with an honest User-Agent.
-- **2 minute guard**: `fetchFeed` refuses a live request if the last one (saved in `feed_state.last_checked_at`) was under 2 minutes ago, unless `--force`. The time is recorded for every live request, whatever the outcome.
-- **Conditional requests**: `Last-Modified` and `ETag` from each good response are sent back as `If-Modified-Since` / `If-None-Match`. RFD currently sends `Last-Modified` but no ETag. Captures keep their own validators (`<feed url>#capture` row), so a capture never takes a 304 that the checker needed.
-- **429**: `Retry-After` (seconds or a date) is stored as `retry_after_until` and respected, even with `--force`. No header means a 15 minute back off.
-- **Blocked**: any 401/403/451, a redirect to a host other than `forums.redflagdeals.com` (e.g. a tollbit subdomain), or a 200 that isn't an Atom feed counts as blocked. Redirects are followed by hand, so the other host is never contacted. It logs the status and final URL and stops. Later live fetches refuse to run until you pass `--force`. Nothing tries to get around a block.
-- **Errors**: network errors and 5xx retry at most twice with exponential backoff. The backoff starts at 2 minutes (2, then 4) so even retries follow the 2 minute rule.
+- Only the Atom feed URL is ever requested, with an honest User-Agent that includes `CONTACT_EMAIL`.
+- **2 minute guard**: a live request is refused if the last one (`feed_state.last_checked_at`) was under 2 minutes
+  ago. The cron runs every 10.
+- **Conditional requests**: `Last-Modified` / `ETag` are sent back, so an unchanged feed is a cheap 304.
+- **429**: `Retry-After` (seconds or a date) is respected even with `--force`. No header means a 15 minute back off.
+- **Blocked**: a 401/403/451, a redirect to another host, or a 200 that isn't an Atom feed counts as blocked.
+  Redirects are followed by hand, so the other host is never contacted. Fetching stops until you run
+  `npm run remote -- unblock`. Nothing tries to get around a block.
+- **Errors**: network errors and 5xx are left for the next cron run. The local CLI retries at most twice, starting at
+  2 minutes.
 
-## Feedback and thresholds
+## Local development
 
-Each watch has its own `highThreshold` and `lowThreshold` (defaults in `src/core/config.ts`).
-`npm run feedback -- <alertId> down` records the rating and runs `suggestThreshold`. If at least 3 thumbs down
-alerts scored below `highThreshold + 0.02`, the threshold is raised to just above the highest of those scores,
-capped at 0.95. It never goes below 0.3 and is never lowered. The command prints what changed and why.
+```bash
+npm test             # 200+ tests, never touch the network
+npm run typecheck    # everything, plus Worker-side code without Node types
+npm run bench        # CPU estimate for a feed check
+npm run build        # bundle the Worker without deploying (needs wrangler.toml)
+```
 
-## Eval
+**Worker locally**: copy `.dev.vars.example` to `.dev.vars`, run `npm run db:migrate:local`, then `npm run dev`.
+Workers AI always runs remotely, so local dev needs `wrangler login`. Trigger the cron with
+`curl http://127.0.0.1:8787/cdn-cgi/local/scheduled`.
 
-1. Capture the feed now and then (`npm run feed:capture`, or run `check:loop -- --save-captures`) for a few days.
-2. `npm run titles:collect` then `npm run labels:sync`.
-3. Review `data/labeled-posts.json`. Each post has `shouldMatch` (watch labels it should match) and `reviewed`. Fix the labels and set `"reviewed": true`.
-4. `npm run eval`. Only reviewed posts count, and it tells you how many are still unreviewed. `npm run eval -- --include-unreviewed` previews against the draft labels.
+**Node CLI**: the same pipeline also runs locally against SQLite (`data/deal-scout.db`, gitignored), handy for trying
+things out. With nothing in `.env` it uses an offline word overlap embedder and rule based planner. With Workers AI
+or Anthropic credentials in `.env` it uses the real models over their REST APIs.
 
-The four eval watches are listed at the top of `data/labeled-posts.json`. If the real titles don't have at least 3
-positives for a watch, the eval says so instead of inventing posts. Expect weak numbers with the fake embedder.
-The point is to have the harness ready to measure real embeddings.
+| Command | What it does |
+| --- | --- |
+| `npm run watch:add -- "<request>"` | Create a local watch |
+| `npm run watch:list` / `watch:remove -- <id>` | List / remove local watches |
+| `npm run check -- --file <path>` | Check a saved capture, fully offline (`--alert-existing`, `--verbose`) |
+| `npm run check` / `check:loop` | Check the live feed once / every 10 minutes (obeys every rule above) |
+| `npm run feedback -- <alertId> up\|down` | Rate a local alert |
+| `npm run feed:capture` / `titles:collect` | Save the live feed / merge captures into `data/collected-titles.json` |
 
-## Data files
+## Troubleshooting
 
-- `data/deal-scout.db` is the local SQLite database (gitignored).
-- `data/captures/*.xml` holds raw feed captures.
-- `data/collected-titles.json` holds every post title seen across captures.
-- `data/labeled-posts.json` holds the eval labels.
-- `test/fixtures/hot-deals-feed.xml` is a real capture used by the tests. The other fixtures are hand edited copies (single entry, malformed entries).
+- **`Configuration problem: Set CONTACT_EMAIL ...`**: set a real `CONTACT_EMAIL` in `wrangler.toml` and redeploy.
+- **Alerts only show in the logs**: Telegram isn't configured or not paired. `npm run remote -- telegram:status`.
+- **The bot doesn't answer**: check `npm run remote -- telegram:status` (webhook URL, last error), and that you
+  paired with `/start <PAIRING_CODE>` exactly.
+- **`status` shows `lastStatus: "blocked"`**: RFD refused a request. Look at `npm run logs` for the status and URL,
+  wait, then `npm run remote -- unblock`.
+- **Changed `EMBEDDING_MODEL`**: watches are re-embedded on the next check and their thresholds reset to the new
+  model's defaults.
+- **"Judge budget ran out"**: raise `MAX_JUDGE_CALLS_PER_DAY` (mind the 10k neuron allowance) or raise thresholds.
 
-## Later phases checklist
+## Project layout
 
-- [ ] **D1 adapter**: create the database, apply `migrations/` with `wrangler d1 migrations apply`, pass `env.DB` as the `Database` (same `prepare/bind/first/all/run` shape).
-- [ ] **Workers AI embedder**: implement `Embedder` with `env.AI` (batch call). Re-embed existing watches, since vectors from different embedders can't be compared. Re-tune thresholds with `npm run eval`.
-- [ ] **Real LLM planner** with tool calling: hand `watchTools` to the model, validate tool input with `parseCreateWatchInput`, and have it write a rich `intentDescription` with synonyms and related products.
-- [ ] **LLM borderline judge**: a small yes/no prompt with the post title, body start and the watch intent.
-- [ ] **Telegram notifier** (`sendMessage`) and a **Telegram webhook** in `worker.fetch`. Check the secret token header and map Telegram chats to users.
-- [ ] **Deploy with Wrangler**: copy `wrangler.toml.example` to `wrangler.toml`, fill in the D1 id, set secrets with `wrangler secret put`, then `wrangler deploy`. Keep the cron at 10 minutes.
+- `src/core/` is the runtime agnostic pipeline: feed fetch and parse, matching, watches, feedback, D1 shaped queries.
+- `src/adapters/` holds Workers AI, Claude, Telegram and notifier adapters (web standard APIs only).
+- `src/worker/` is the Cloudflare Worker: cron, Telegram webhook, admin API.
+- `src/local/` is the Node CLI with SQLite and offline stand ins.
+- `scripts/` holds eval, labeling, capture, bench and the remote admin client.
+- `migrations/` holds SQL that runs on both D1 and SQLite.
+
+`tsconfig.core.json` typechecks `core`, `adapters` and `worker` without Node types, and `test/coreBoundary.test.ts`
+checks their imports, so nothing Node-only sneaks into the Worker.
 
 ## Known limitations
 
-- The fake embedder only sees shared words. "portable charger" won't match "power bank" until real embeddings land, and "[Flo] Flo EV Charger Program" shares the word "charger".
-- Posts are marked seen before matching, as the spec orders it. If the embedder fails during a run, those posts won't be retried.
-- The eval matches on titles only, because collected titles don't keep post bodies.
+- The judge and planner run on open models by default. They're good, not perfect. Use 👎 and the eval.
+- The judge only sees the title and the first 300 characters of the post.
+- One owner per deployment by design. Someone else who wants alerts deploys their own copy.
