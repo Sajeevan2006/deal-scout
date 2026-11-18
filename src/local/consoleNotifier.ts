@@ -1,8 +1,7 @@
 import type { Notifier } from "../core/ports/notifier";
 import type { DealAlert } from "../core/types";
 
-// PLACEHOLDER notifier: prints to the terminal
-// TODO(integration): replace with the Telegram notifier (sendMessage with the bot token)
+// Local CLI notifier: prints to the terminal. The Worker sends to Telegram instead.
 
 function formatPrice(alert: DealAlert): string {
   if (alert.price === null) {

@@ -2,25 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { consoleLogger, MIN_FETCH_INTERVAL_MS, systemClock, type DealScoutConfig } from "../core/config";
-import {
-  deactivateWatch,
-  ensureUser,
-  getAlert,
-  getWatch,
-  insertFeedback,
-  listFeedbackForWatch,
-  listWatchesForUser,
-  updateWatchHighThreshold,
-} from "../core/db/queries";
-import { suggestThreshold } from "../core/feedback/tuneThreshold";
+import { deactivateWatch, ensureUser, listWatchesForUser } from "../core/db/queries";
+import { describeFeedbackOutcome, recordAlertFeedback } from "../core/feedback/recordFeedback";
 import { runFeedCheck, type FeedCheckSummary } from "../core/pipeline/runFeedCheck";
 import type { FeedSource } from "../core/ports/feedSource";
 import type { FeedbackRating, Watch } from "../core/types";
 import { createWatch } from "../core/watches/createWatch";
 import { createConsoleNotifier } from "./consoleNotifier";
-import { createFakeEmbedder } from "./fakeEmbedder";
 import { createFileFeedSource } from "./fileFeedSource";
 import { createLiveFeedSource } from "./liveFeedSource";
+import { createLocalAi, type LocalAi } from "./localAi";
 import {
   captureFileName,
   capturesDir,
@@ -31,8 +22,6 @@ import {
   projectRoot,
 } from "./localSetup";
 import type { SqliteDatabase } from "./sqliteDatabase";
-import { createStubBorderlineJudge } from "./stubBorderlineJudge";
-import { createStubWatchPlanner } from "./stubWatchPlanner";
 
 const USAGE = `Usage:
   npm run watch:add -- "<request>"
@@ -40,7 +29,9 @@ const USAGE = `Usage:
   npm run watch:remove -- <watchId>
   npm run check [-- --file <path>] [--force] [--alert-existing] [--save-captures] [--verbose]
   npm run check:loop [-- --interval-minutes <n>] [--alert-existing] [--save-captures] [--verbose]
-  npm run feedback -- <alertId> up|down`;
+  npm run feedback -- <alertId> up|down
+
+Real AI is used when .env has Workers AI or Anthropic credentials (see .env.example).`;
 
 function formatWatch(watch: Watch): string {
   const status = watch.active ? "active" : "removed";
@@ -51,11 +42,11 @@ function formatWatch(watch: Watch): string {
     `#${watch.id} [${status}] ${watch.label}`,
     `    intent: ${watch.intentDescription}`,
     `    max price: ${maxPriceText}   exclude: ${excludesText}   stores: ${storesText}`,
-    `    thresholds: high ${watch.highThreshold}  low ${watch.lowThreshold}`,
+    `    thresholds: high ${watch.highThreshold}  low ${watch.lowThreshold}   embedding: ${watch.embeddingModel}`,
   ].join("\n");
 }
 
-async function addWatch(db: SqliteDatabase, config: DealScoutConfig, requestWords: string[]): Promise<void> {
+async function addWatch(db: SqliteDatabase, config: DealScoutConfig, ai: LocalAi, requestWords: string[]): Promise<void> {
   const userRequest = requestWords.join(" ").trim();
   if (userRequest.length === 0) {
     throw new Error('Give the watch request, e.g. npm run watch:add -- "portable charger under $40"');
@@ -63,8 +54,8 @@ async function addWatch(db: SqliteDatabase, config: DealScoutConfig, requestWord
   await ensureUser(db, DEFAULT_LOCAL_USER_ID, DEFAULT_LOCAL_USER_NAME, systemClock.now().toISOString());
   const watch = await createWatch(DEFAULT_LOCAL_USER_ID, userRequest, {
     db,
-    planner: createStubWatchPlanner(),
-    embedder: createFakeEmbedder(config.embeddingDimensions),
+    planner: ai.planner,
+    embedder: ai.embedder,
     clock: systemClock,
     config,
   });
@@ -108,25 +99,8 @@ async function recordFeedback(db: SqliteDatabase, config: DealScoutConfig, args:
     throw new Error("Rating must be up or down");
   }
   const rating: FeedbackRating = ratingText;
-  const alert = await getAlert(db, alertId);
-  if (alert === null) {
-    throw new Error(`No alert #${alertId}`);
-  }
-  await insertFeedback(db, alertId, rating, systemClock.now().toISOString());
-  console.log(`Recorded thumbs ${rating} for alert #${alertId} (score ${alert.score.toFixed(3)}).`);
-
-  const watch = await getWatch(db, alert.watchId);
-  if (watch === null) {
-    return;
-  }
-  const feedback = await listFeedbackForWatch(db, watch.id);
-  const suggestion = suggestThreshold(watch, feedback, config.thresholdTuning);
-  if (suggestion.changed) {
-    await updateWatchHighThreshold(db, watch.id, suggestion.highThreshold);
-    console.log(`Watch #${watch.id} high threshold ${watch.highThreshold} -> ${suggestion.highThreshold} (${suggestion.reason}).`);
-  } else {
-    console.log(`Watch #${watch.id} high threshold stays at ${watch.highThreshold} (${suggestion.reason}).`);
-  }
+  const outcome = await recordAlertFeedback(db, alertId, rating, systemClock.now().toISOString(), config.thresholdTuning);
+  console.log(describeFeedbackOutcome(outcome, rating));
 }
 
 // Wraps a source so every fresh feed body is also saved as a capture
@@ -165,13 +139,15 @@ function printSummary(summary: FeedCheckSummary, verbose: boolean): void {
   console.log("");
   console.log(`Check summary (${summary.outcome}${summary.firstRun ? ", first run" : ""})`);
   console.log(`  fetched ${summary.fetched}  new ${summary.newPosts}  matched ${summary.matched}  alerted ${summary.alerted}  judge calls ${summary.judgeCalls}`);
-  if (summary.duplicatesSkipped > 0 || summary.failedAlerts > 0) {
-    console.log(`  duplicates skipped ${summary.duplicatesSkipped}  failed alerts ${summary.failedAlerts}`);
+  if (summary.duplicatesSkipped > 0 || summary.failedAlerts > 0 || summary.judgeErrors > 0 || summary.judgeSkipped > 0) {
+    console.log(
+      `  duplicates skipped ${summary.duplicatesSkipped}  failed alerts ${summary.failedAlerts}  judge errors ${summary.judgeErrors}  judge skipped ${summary.judgeSkipped}`,
+    );
   }
   console.log(`  ${summary.message}`);
 }
 
-async function runCheckOnce(db: SqliteDatabase, config: DealScoutConfig, flags: CheckFlags): Promise<FeedCheckSummary> {
+async function runCheckOnce(db: SqliteDatabase, config: DealScoutConfig, ai: LocalAi, flags: CheckFlags): Promise<FeedCheckSummary> {
   let feedSource: FeedSource;
   if (flags.file) {
     feedSource = createFileFeedSource(flags.file);
@@ -181,13 +157,12 @@ async function runCheckOnce(db: SqliteDatabase, config: DealScoutConfig, flags: 
   if (flags.saveCaptures && feedSource.isLive) {
     feedSource = withCaptureSaving(feedSource);
   }
-  const judge = createStubBorderlineJudge();
   return runFeedCheck(
     {
       db,
       feedSource,
-      embedder: createFakeEmbedder(config.embeddingDimensions),
-      judge,
+      embedder: ai.embedder,
+      judge: ai.judge,
       notifier: createConsoleNotifier(),
       clock: systemClock,
       logger: consoleLogger,
@@ -233,15 +208,15 @@ function parseCheckFlags(args: string[], allowFileAndForce: boolean) {
   return { flags, intervalMinutesText: values["interval-minutes"] };
 }
 
-async function checkOnce(db: SqliteDatabase, config: DealScoutConfig, args: string[]): Promise<void> {
+async function checkOnce(db: SqliteDatabase, config: DealScoutConfig, ai: LocalAi, args: string[]): Promise<void> {
   const { flags } = parseCheckFlags(args, true);
-  const summary = await runCheckOnce(db, config, flags);
+  const summary = await runCheckOnce(db, config, ai, flags);
   printSummary(summary, flags.verbose);
   process.exitCode = exitCodeFor(summary);
 }
 
-// TODO(integration): on Cloudflare the cron trigger calling worker.scheduled replaces this loop
-async function checkLoop(db: SqliteDatabase, config: DealScoutConfig, args: string[]): Promise<void> {
+// Local stand in for the Worker's cron trigger
+async function checkLoop(db: SqliteDatabase, config: DealScoutConfig, ai: LocalAi, args: string[]): Promise<void> {
   const { flags, intervalMinutesText } = parseCheckFlags(args, false);
   let intervalMs = config.checkIntervalMs;
   if (intervalMinutesText !== undefined) {
@@ -256,7 +231,7 @@ async function checkLoop(db: SqliteDatabase, config: DealScoutConfig, args: stri
   }
   console.log(`Checking the live feed every ${intervalMs / 60000} minutes. Ctrl+C to stop.`);
   while (true) {
-    const summary = await runCheckOnce(db, config, flags);
+    const summary = await runCheckOnce(db, config, ai, flags);
     printSummary(summary, flags.verbose);
     if (summary.outcome === "blocked") {
       console.error("Stopping the loop because RFD blocked the request. Not retrying.");
@@ -287,16 +262,21 @@ async function main(): Promise<void> {
     process.exit(130);
   });
   try {
+    const needsAi = command === "watch:add" || command === "check" || command === "check:loop";
+    const ai = needsAi ? createLocalAi(config.matchTextBodyChars) : null;
+    if (ai !== null) {
+      console.log(`Using ${ai.description}`);
+    }
     if (command === "watch:add") {
-      await addWatch(db, config, args);
+      await addWatch(db, config, ai!, args);
     } else if (command === "watch:list") {
       await listWatches(db);
     } else if (command === "watch:remove") {
       await removeWatch(db, args[0]);
     } else if (command === "check") {
-      await checkOnce(db, config, args);
+      await checkOnce(db, config, ai!, args);
     } else if (command === "check:loop") {
-      await checkLoop(db, config, args);
+      await checkLoop(db, config, ai!, args);
     } else if (command === "feedback") {
       await recordFeedback(db, config, args);
     } else {

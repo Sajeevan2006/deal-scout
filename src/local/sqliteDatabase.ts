@@ -3,8 +3,8 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { AllResult, Database, PreparedStatement, RunResult, SqlValue } from "../core/ports/database";
 
-// Local stand in for D1 behind the Database port
-// TODO(integration): on Cloudflare, env.DB (D1) replaces this adapter and wrangler applies migrations/
+// Local stand in for D1 behind the Database port. On Cloudflare, env.DB (D1) is used directly
+// and wrangler applies migrations/.
 export interface SqliteDatabase extends Database {
   close(): void;
 }
