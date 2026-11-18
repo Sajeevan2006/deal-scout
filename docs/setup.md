@@ -83,6 +83,16 @@ Everything is optional and lives under `[vars]` in `wrangler.toml`. Defaults:
 
 Redeploy with `npm run deploy` after changing them.
 
+## Updating
+
+After pulling new changes, apply any new migrations before deploying, so the code never runs against an older schema:
+
+```bash
+npm install
+npm run db:migrate:remote
+npm run deploy
+```
+
 ## Using Claude instead of Workers AI
 
 Workers AI handles the planner and judge for free. To use Claude Haiku instead:
