@@ -3,6 +3,8 @@ import {
   claimTelegramUpdate,
   deactivateWatch,
   getAppState,
+  getCounter,
+  incrementCounter,
   getWatch,
   listWatchesForUser,
   OWNER_CHAT_ID_KEY,
@@ -28,6 +30,9 @@ import {
 // Single owner bot: the first chat that sends /start <PAIRING_CODE> owns it, everyone else is
 // turned away. Watches made from Telegram belong to the owner user.
 export const OWNER_USER_ID = "owner";
+
+// Wrong pairing codes allowed per day, so the code can't be guessed by brute force
+export const MAX_PAIRING_ATTEMPTS_PER_DAY = 10;
 
 export interface TelegramBotDeps {
   db: Database;
@@ -82,7 +87,20 @@ async function handlePairing(message: TelegramMessage, code: string, ownerChatId
     await deps.api.sendMessage(chatId, "This bot isn't set up yet: its owner needs to set the PAIRING_CODE secret.");
     return;
   }
+  // In a group, every member could use the bot, so only a private chat can own it
+  if (message.chat.type !== "private") {
+    await deps.api.sendMessage(chatId, "Pair from a private chat with the bot, not a group.");
+    return;
+  }
+  const attemptsKey = `pairing_attempts:${deps.clock.now().toISOString().slice(0, 10)}`;
+  if ((await getCounter(deps.db, attemptsKey)) >= MAX_PAIRING_ATTEMPTS_PER_DAY) {
+    await deps.api.sendMessage(chatId, "Too many wrong pairing codes today. Try again tomorrow.");
+    return;
+  }
   if (code.length === 0 || !constantTimeEqual(code, deps.pairingCode)) {
+    if (code.length > 0) {
+      await incrementCounter(deps.db, attemptsKey, 1, deps.clock.now().toISOString());
+    }
     await deps.api.sendMessage(chatId, "Send <code>/start &lt;pairing code&gt;</code> with the PAIRING_CODE you set when deploying.");
     return;
   }

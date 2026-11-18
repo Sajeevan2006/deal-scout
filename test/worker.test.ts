@@ -185,6 +185,8 @@ describe("admin API checks and status", () => {
     expect(status.body).toMatchObject({ activeWatches: 1, telegram: { configured: true, paired: false } });
     expect(status.body.ai.embeddingModel).toBe("@cf/baai/bge-base-en-v1.5");
 
+    expect((await call(api("GET", "/api/posts?days=abc"))).status).toBe(400);
+    expect((await call(api("GET", "/api/posts?days=999"))).status).toBe(400);
     const posts = await call(api("GET", "/api/posts?days=7"));
     expect(posts.body.posts).toHaveLength(15);
     expect(posts.body.posts[0]).toHaveProperty("bodySnippet");

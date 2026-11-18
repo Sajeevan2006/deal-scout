@@ -1,9 +1,15 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTelegramApi, TelegramApiError, type TelegramApi, type TelegramUpdate } from "../src/adapters/telegram/api";
-import { handleTelegramUpdate, OWNER_USER_ID, parseCommand, type TelegramBotDeps } from "../src/adapters/telegram/bot";
+import {
+  handleTelegramUpdate,
+  MAX_PAIRING_ATTEMPTS_PER_DAY,
+  OWNER_USER_ID,
+  parseCommand,
+  type TelegramBotDeps,
+} from "../src/adapters/telegram/bot";
 import { escapeHtml, formatAlertMessage, parseCallbackData } from "../src/adapters/telegram/format";
-import { buildConfig, silentLogger } from "../src/core/config";
+import { buildConfig, FAKE_EMBEDDING_MODEL, silentLogger } from "../src/core/config";
 import { claimAlert, getAppState, getWatch, listActiveWatches, OWNER_CHAT_ID_KEY, setAppState } from "../src/core/db/queries";
 import type { Clock } from "../src/core/types";
 import { createRuleWatchPlanner } from "../src/core/watches/rulePlanner";
@@ -133,6 +139,26 @@ describe("pairing", () => {
     expect(await getAppState(db, OWNER_CHAT_ID_KEY)).toBeNull();
   });
 
+  it("refuses to pair from a group chat", async () => {
+    nextUpdateId += 1;
+    const groupStart: TelegramUpdate = {
+      update_id: nextUpdateId,
+      message: { message_id: 1, chat: { id: -500, type: "group" }, text: "/start secret-code" },
+    };
+    await handleTelegramUpdate(groupStart, deps());
+    expect(await getAppState(db, OWNER_CHAT_ID_KEY)).toBeNull();
+    expect(lastText()).toMatch(/private chat/);
+  });
+
+  it("stops accepting codes after too many wrong ones in a day", async () => {
+    for (let attempt = 0; attempt < MAX_PAIRING_ATTEMPTS_PER_DAY; attempt += 1) {
+      await handleTelegramUpdate(message(STRANGER_CHAT, `/start guess${attempt}`), deps());
+    }
+    await handleTelegramUpdate(message(OWNER_CHAT, "/start secret-code"), deps());
+    expect(await getAppState(db, OWNER_CHAT_ID_KEY)).toBeNull();
+    expect(lastText()).toMatch(/Too many wrong pairing codes/);
+  });
+
   it("keeps the first owner even if someone else has the code", async () => {
     await pairOwner();
     await handleTelegramUpdate(message(STRANGER_CHAT, "/start secret-code"), deps());
@@ -207,7 +233,7 @@ describe("buttons", () => {
   async function addWatchAndAlert(): Promise<{ watchId: number; alertId: number }> {
     await handleTelegramUpdate(message(OWNER_CHAT, "air fryer"), deps());
     const [watch] = await listActiveWatches(db);
-    const alertId = (await claimAlert(db, watch!.id, "post-1", 0.7, false, "2026-10-26T12:00:00.000Z"))!;
+    const alertId = (await claimAlert(db, watch!.id, "post-1", 0.7, false, "2026-10-26T12:00:00.000Z", watch!.embeddingModel))!;
     return { watchId: watch!.id, alertId };
   }
 
@@ -226,11 +252,21 @@ describe("buttons", () => {
     const before = (await getWatch(db, watchId))!.highThreshold;
     for (const postId of ["a", "b", "c"]) {
       // Just above the threshold: alerts the user keeps rejecting
-      const alertId = (await claimAlert(db, watchId, postId, before + 0.01, false, "2026-10-26T12:00:00.000Z"))!;
+      const alertId = (await claimAlert(db, watchId, postId, before + 0.01, false, "2026-10-26T12:00:00.000Z", FAKE_EMBEDDING_MODEL))!;
       await handleTelegramUpdate(callback(OWNER_CHAT, `fb:${alertId}:down`), deps());
     }
     expect(api.sent[api.sent.length - 1]!.callbackText).toMatch(/stricter/);
     expect((await getWatch(db, watchId))!.highThreshold).toBeGreaterThan(before);
+  });
+
+  it("ignores thumbs down on alerts scored by an older embedding model", async () => {
+    const { watchId } = await addWatchAndAlert();
+    const before = (await getWatch(db, watchId))!.highThreshold;
+    for (const postId of ["a", "b", "c"]) {
+      const alertId = (await claimAlert(db, watchId, postId, before + 0.01, false, "2026-10-26T12:00:00.000Z", "old/model"))!;
+      await handleTelegramUpdate(callback(OWNER_CHAT, `fb:${alertId}:down`), deps());
+    }
+    expect((await getWatch(db, watchId))!.highThreshold).toBe(before);
   });
 
   it("removes a watch from its button", async () => {

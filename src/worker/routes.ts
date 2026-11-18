@@ -37,7 +37,7 @@ class HttpError extends Error {
 }
 
 function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body, null, 2), { status, headers: { "Content-Type": "application/json" } });
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
 function describeError(error: unknown): string {
@@ -201,7 +201,10 @@ async function handleApi(request: Request, env: Env, url: URL, buildDeps: DepsBu
   }
   if (method === "GET" && path === "/api/posts") {
     const days = Number(url.searchParams.get("days") ?? "30");
-    const since = new Date(deps.clock.now().getTime() - Math.max(1, days) * 24 * 60 * 60 * 1000).toISOString();
+    if (!Number.isInteger(days) || days < 1 || days > 30) {
+      throw new HttpError(400, "days must be a whole number from 1 to 30");
+    }
+    const since = new Date(deps.clock.now().getTime() - days * 24 * 60 * 60 * 1000).toISOString();
     return json({ posts: await listSeenPostsSince(deps.db, since) });
   }
   if (method === "POST" && path === "/api/telegram/setup") {

@@ -21,9 +21,9 @@ export function createAnthropicLlm(options: AnthropicLlmOptions): LlmClient {
       ({ default: AnthropicClient }) =>
         new AnthropicClient({
           apiKey: options.apiKey,
-          // Telegram work runs in waitUntil, which allows about 30 seconds
-          timeout: 25_000,
-          maxRetries: 1,
+          // Telegram work runs in waitUntil, which allows about 30 seconds, so one try that fits
+          timeout: 20_000,
+          maxRetries: 0,
           ...(options.fetch ? { fetch: options.fetch } : {}),
         }),
     );
