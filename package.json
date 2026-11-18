@@ -1,13 +1,22 @@
 {
   "name": "deal-scout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Personal RedFlagDeals Hot Deals watcher (phase 1, local core)",
+  "description": "Personal RedFlagDeals Hot Deals watcher on the Cloudflare free plan, with Telegram alerts",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "db:migrate:local": "wrangler d1 migrations apply deal-scout --local",
+    "db:migrate:remote": "wrangler d1 migrations apply deal-scout --remote",
+    "logs": "wrangler tail",
+    "remote": "tsx scripts/remote.ts",
+    "telegram:setup": "tsx scripts/remote.ts telegram:setup",
+    "status": "tsx scripts/remote.ts status",
     "watch:add": "tsx src/local/cli.ts watch:add",
     "watch:list": "tsx src/local/cli.ts watch:list",
     "watch:remove": "tsx src/local/cli.ts watch:remove",
@@ -16,8 +25,10 @@
     "feedback": "tsx src/local/cli.ts feedback",
     "feed:capture": "tsx scripts/captureFeed.ts",
     "titles:collect": "tsx scripts/collectTitles.ts",
+    "labels:pull": "tsx scripts/labelsPull.ts",
     "labels:sync": "tsx scripts/syncLabels.ts",
     "eval": "tsx scripts/eval.ts",
+    "bench": "tsx scripts/benchCpu.ts",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.core.json"
   },

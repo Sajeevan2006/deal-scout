@@ -21,6 +21,7 @@ const { silentLogger } = await import("../src/core/config");
 const { cosineSimilarity } = await import("../src/core/matching/similarity");
 const { applyHardFilters } = await import("../src/core/matching/filters");
 const { buildMatchText } = await import("../src/core/matching/postText");
+const { decodeEmbedding, encodeEmbedding } = await import("../src/core/matching/vectors");
 const importMs = performance.now() - importStart;
 
 const xml = readFileSync(new URL("../test/fixtures/hot-deals-feed.xml", import.meta.url), "utf8");
@@ -48,7 +49,7 @@ const watches = Array.from({ length: watchCount }, (_, index) => ({
   userId: "bench",
   label: "bench",
   intentDescription: "bench",
-  intentEmbedding: randomVector(),
+  intentEmbedding: Float32Array.from(randomVector()),
   embeddingModel: "bench",
   maxPrice: 40,
   excludeTerms: ["cable", "refurbished"],
@@ -58,13 +59,13 @@ const watches = Array.from({ length: watchCount }, (_, index) => ({
   active: true,
   createdAt: "",
 }));
-// What D1 and Workers AI hand back: JSON text that has to be parsed
-const watchRowsJson = watches.map((watch) => JSON.stringify(watch.intentEmbedding));
+// What D1 and Workers AI hand back: stored embedding text, and JSON from the embedding model
+const storedEmbeddings = watches.map((watch) => encodeEmbedding(watch.intentEmbedding));
 const embeddingResponseJson = JSON.stringify({ shape: [posts.length, dimensions], data: posts.map(() => randomVector()) });
 
 function matchAll(): void {
-  for (const rowJson of watchRowsJson) {
-    JSON.parse(rowJson);
+  for (const stored of storedEmbeddings) {
+    decodeEmbedding(stored);
   }
   const response = JSON.parse(embeddingResponseJson) as { data: number[][] };
   for (const [postIndex, post] of posts.entries()) {

@@ -5,32 +5,47 @@ import {
   readJsonFile,
   writeJsonFile,
   type CollectedTitle,
+  type LabeledPost,
   type LabeledPostsFile,
 } from "./labeledPosts";
 
-// Adds any newly collected titles to labeled-posts.json as unreviewed, with no labels yet.
-// Existing entries and your reviews are left alone.
+// Adds any newly collected posts to labeled-posts.json as unreviewed, with no labels yet.
+// Existing entries and your reviews are left alone (only a missing body snippet gets filled in).
 
 const collectedTitles = await readJsonFile<CollectedTitle[]>(collectedTitlesPath, []);
 if (collectedTitles.length === 0) {
-  console.log("No collected titles. Run npm run titles:collect first.");
+  console.log("No collected titles. Run npm run titles:collect or npm run labels:pull first.");
   process.exit(0);
 }
 
 const labeledFile = await readJsonFile<LabeledPostsFile>(labeledPostsPath, { watches: DEFAULT_EVAL_WATCHES, posts: [] });
-const labeledIds = new Set<string>();
+const labeledById = new Map<string, LabeledPost>();
 for (const labeledPost of labeledFile.posts) {
-  labeledIds.add(labeledPost.id);
+  labeledById.set(labeledPost.id, labeledPost);
 }
 
 let addedCount = 0;
+let bodiesFilled = 0;
 for (const collected of collectedTitles) {
-  if (labeledIds.has(collected.id)) {
+  const existing = labeledById.get(collected.id);
+  if (existing !== undefined) {
+    if (!existing.bodySnippet && collected.bodySnippet) {
+      existing.bodySnippet = collected.bodySnippet;
+      bodiesFilled += 1;
+    }
     continue;
   }
-  labeledFile.posts.push({ id: collected.id, title: collected.title, shouldMatch: [], reviewed: false });
+  const entry: LabeledPost = { id: collected.id, title: collected.title, shouldMatch: [], reviewed: false };
+  if (collected.bodySnippet) {
+    entry.bodySnippet = collected.bodySnippet;
+  }
+  labeledFile.posts.push(entry);
+  labeledById.set(entry.id, entry);
   addedCount += 1;
 }
 
 await writeJsonFile(labeledPostsPath, labeledFile);
-console.log(`Added ${addedCount} unreviewed posts to ${path.relative(projectRoot, labeledPostsPath)} (${labeledFile.posts.length} total).`);
+console.log(
+  `Added ${addedCount} unreviewed posts to ${path.relative(projectRoot, labeledPostsPath)} ` +
+    `(${labeledFile.posts.length} total, ${bodiesFilled} bodies filled in).`,
+);

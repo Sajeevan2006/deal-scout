@@ -8,6 +8,8 @@ export interface CollectedTitle {
   title: string;
   link: string;
   publishedAt: string | null;
+  // Start of the post body, when known (captures and labels:pull have it)
+  bodySnippet?: string;
 }
 
 export interface EvalWatchSpec {
@@ -18,6 +20,7 @@ export interface EvalWatchSpec {
 export interface LabeledPost {
   id: string;
   title: string;
+  bodySnippet?: string;
   shouldMatch: string[];
   reviewed: boolean;
   note?: string;
@@ -45,4 +48,42 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
 
 export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+// Oldest first, posts without a date at the end
+export function compareByPublishedAt(first: CollectedTitle, second: CollectedTitle): number {
+  if (first.publishedAt === second.publishedAt) {
+    return first.id.localeCompare(second.id);
+  }
+  if (first.publishedAt === null) {
+    return 1;
+  }
+  if (second.publishedAt === null) {
+    return -1;
+  }
+  return first.publishedAt.localeCompare(second.publishedAt);
+}
+
+// Adds new posts to collected-titles.json and fills in missing bodies
+export function mergeCollectedTitles(
+  existing: CollectedTitle[],
+  incoming: CollectedTitle[],
+): { merged: CollectedTitle[]; added: number } {
+  const byId = new Map<string, CollectedTitle>();
+  for (const collected of existing) {
+    byId.set(collected.id, collected);
+  }
+  let added = 0;
+  for (const collected of incoming) {
+    const current = byId.get(collected.id);
+    if (current === undefined) {
+      byId.set(collected.id, collected);
+      added += 1;
+    } else if (!current.bodySnippet && collected.bodySnippet) {
+      byId.set(collected.id, { ...current, bodySnippet: collected.bodySnippet });
+    }
+  }
+  const merged = [...byId.values()];
+  merged.sort(compareByPublishedAt);
+  return { merged, added };
 }
