@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `npm run dev` (wrangler dev). Never commit .dev.vars.
+ADMIN_TOKEN=change-me-to-a-long-random-string
+PAIRING_CODE=change-me-too
+# Telegram is optional for local dev (webhooks need a public URL anyway)
+# TELEGRAM_BOT_TOKEN=
+# TELEGRAM_WEBHOOK_SECRET=
+# ANTHROPIC_API_KEY=

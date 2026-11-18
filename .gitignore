@@ -3,6 +3,8 @@ node_modules/
 data/deal-scout.db
 data/deal-scout.db-*
 .wrangler/
+# Your own copy of wrangler.toml.example (has your D1 database id)
+wrangler.toml
 .dev.vars
 .env
 

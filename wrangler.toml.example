@@ -1,29 +1,47 @@
-# NOT USED YET. Phase 1 runs locally on Node and nothing here is deployed.
-# This shows roughly what the Cloudflare Worker config will look like later.
-# Copy to wrangler.toml only when the D1, Workers AI and Telegram adapters exist.
+# Copy this file to wrangler.toml, then fill in database_id and CONTACT_EMAIL.
+# Everything here fits the Cloudflare free plan. See the README for the full setup.
 
 name = "deal-scout"
-main = "src/core/worker.ts"
-compatibility_date = "2026-10-01"
+main = "src/worker/index.ts"
+compatibility_date = "2026-11-01"
 
-# Check the feed every 10 minutes (never go under 2)
+# Check the feed every 10 minutes. Never go under 2 (the code refuses to fetch more often anyway).
 [triggers]
 crons = ["*/10 * * * *"]
 
-# D1 database, exposed to the worker as env.DB
+# D1 database, exposed to the Worker as env.DB.
+# Create it with: npx wrangler d1 create deal-scout   (then paste the id below)
 [[d1_databases]]
 binding = "DB"
 database_name = "deal-scout"
-database_id = "<fill in after: wrangler d1 create deal-scout>"
+database_id = "<paste the id from wrangler d1 create>"
 migrations_dir = "migrations"
 
-# Workers AI for embeddings and the LLM calls, exposed as env.AI
+# Workers AI (embeddings + LLM), exposed as env.AI. Free allowance: 10,000 neurons a day.
 [ai]
 binding = "AI"
 
+# Workers Logs, so you can see each run and its CPU time in the dashboard
+[observability]
+enabled = true
+
 [vars]
+# Required. Goes in the User-Agent so RFD can contact you if something goes wrong.
 CONTACT_EMAIL = "me@example.com"
 
-# Secrets go in with `wrangler secret put` (or .dev.vars locally), never in this file:
-#   TELEGRAM_BOT_TOKEN
-#   TELEGRAM_CHAT_ID
+# Optional settings (defaults shown)
+# EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
+# LLM_PROVIDER = "workers-ai"          # or "anthropic" (then: wrangler secret put ANTHROPIC_API_KEY)
+# PLANNER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"   # claude-haiku-5-5 with anthropic
+# JUDGE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# HIGH_THRESHOLD = "0.8"               # for new watches; tune with npm run eval
+# LOW_THRESHOLD = "0.6"
+# MAX_JUDGE_CALLS_PER_RUN = "8"
+# MAX_JUDGE_CALLS_PER_DAY = "300"
+
+# Secrets go in with `npx wrangler secret put <NAME>` (or .dev.vars for wrangler dev), never in this file:
+#   ADMIN_TOKEN              protects the /api admin endpoints
+#   PAIRING_CODE             you send /start <PAIRING_CODE> to your bot once to claim it
+#   TELEGRAM_BOT_TOKEN       from @BotFather (optional until you set up Telegram)
+#   TELEGRAM_WEBHOOK_SECRET  any random string of letters, digits, _ or -
+#   ANTHROPIC_API_KEY        only with LLM_PROVIDER = "anthropic"
