@@ -101,7 +101,9 @@ Use long random values, for example from `node -e "console.log(crypto.randomUUID
 npm run deploy
 ```
 
-Note the URL it prints, like `https://deal-scout.<your-subdomain>.workers.dev`. The cron starts right away.
+Note the URL it prints, like `https://deal-scout.<your-subdomain>.workers.dev`. The cron starts right away. On a
+brand new account, the first deploy asks you to pick a `workers.dev` subdomain, and the URL can take several minutes
+to start answering over HTTPS (TLS errors until the certificate is issued). The cron runs in the meantime.
 
 **6. Talk to it from your machine**
 
