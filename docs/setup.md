@@ -78,7 +78,7 @@ Everything is optional and lives under `[vars]` in `wrangler.toml`. Defaults:
 | `EMBEDDING_MODEL` | `@cf/baai/bge-base-en-v1.5` | Changing it re-embeds every watch on the next check |
 | `LLM_PROVIDER` | `workers-ai` | Or `anthropic`, see below |
 | `PLANNER_MODEL` / `JUDGE_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `claude-haiku-5-5` with `anthropic` |
-| `HIGH_THRESHOLD` / `LOW_THRESHOLD` | `0.8` / `0.6` | Thresholds for new watches, see [Tuning](tuning.md) |
+| `HIGH_THRESHOLD` / `LOW_THRESHOLD` | `0.8` / `0.6` | Thresholds for new watches, and for watches re-embedded after a model change. See [Tuning](tuning.md) |
 | `MAX_JUDGE_CALLS_PER_RUN` / `_PER_DAY` | `8` / `300` | Keeps the judge inside the free AI allowance |
 
 Redeploy with `npm run deploy` after changing them.
@@ -108,5 +108,6 @@ At Deal Scout's volume that's fractions of a cent a day. Embeddings stay on Work
   wait, then `npm run remote -- unblock`.
 - **Changed `EMBEDDING_MODEL`**: watches are re-embedded on the next check and their thresholds reset to the new
   model's defaults.
+- **`check` says "too soon"**: the 2 minute gap between feed requests always applies. The cron may have just run.
 - **"Judge budget ran out"**: raise `MAX_JUDGE_CALLS_PER_DAY` (mind the free AI allowance) or raise thresholds.
 - **`Configuration problem: ...` from the API**: a binding is missing in `wrangler.toml`. The message says which.

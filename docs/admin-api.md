@@ -12,7 +12,7 @@ All `/api` routes need `Authorization: Bearer <ADMIN_TOKEN>`. `npm run remote --
 | `watch "<request>"` | `POST /api/watches` | Create a watch, body `{"text": "..."}` |
 | `remove <id>` | `DELETE /api/watches/<id>` | Stop a watch |
 | `thresholds <id> <high> <low>` | `POST /api/watches/<id>/thresholds` | Set a watch's thresholds |
-| `check [--force] [--alert-existing]` | `POST /api/check` | Run a check now (obeys the 2 minute guard unless `--force`, never overrides a 429) |
+| `check [--alert-existing] [--force]` | `POST /api/check` | Run a check now. Always obeys the 2 minute gap and any 429 back off. `--alert-existing` scores every post in the feed, not just new ones. `--force` retries once after a block |
 | `feedback <alertId> up\|down` | `POST /api/feedback` | Rate an alert |
 | `unblock` | `POST /api/unblock` | Allow live fetches again after RFD blocked one. Find out why first |
 | `telegram:setup` | `POST /api/telegram/setup` | Register the webhook and commands |

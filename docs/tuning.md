@@ -36,7 +36,8 @@ negatives, and a threshold sweep with suggested `high` / `low` values.
 
 ## Apply what you learn
 
-- New watches: `HIGH_THRESHOLD` / `LOW_THRESHOLD` under `[vars]` in `wrangler.toml`, then `npm run deploy`.
+- New watches (and watches re-embedded after a model change): `HIGH_THRESHOLD` / `LOW_THRESHOLD` under `[vars]` in
+  `wrangler.toml`, then `npm run deploy`.
 - Existing watches: `npm run remote -- thresholds <id> <high> <low>`.
 
 The eval scores title + body snippet, the same text the Worker embeds.

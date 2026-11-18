@@ -39,10 +39,6 @@ function workersAiRunner() {
   return createRestRunner({ accountId, apiToken });
 }
 
-export function hasWorkersAiCredentials(): boolean {
-  return workersAiRunner() !== null;
-}
-
 export function createLocalEmbedder(kind: "auto" | "fake" | "workers-ai" = "auto", fakeDimensions = 256): Embedder {
   const runner = workersAiRunner();
   if (kind === "fake" || (kind === "auto" && runner === null)) {

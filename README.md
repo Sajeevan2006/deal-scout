@@ -79,8 +79,9 @@ npm run remote -- check --alert-existing
 npm run logs
 ```
 
-The first check scores the posts already in the feed instead of skipping them. Matches show up in the logs, or in
-Telegram once it's set up.
+`--alert-existing` scores every post currently in the feed (roughly the last day), not just new ones, so you see
+results right away. Matches show up in the logs, or in Telegram once it's set up. If it says "too soon", the cron just
+ran: wait 2 minutes.
 
 ## Telegram
 

@@ -34,7 +34,7 @@
 | `/list` | Your watches, with remove buttons |
 | `/remove <id>` | Stop a watch |
 | `/help` | How it works |
-| 👍 / 👎 on an alert | Rate it. 3 or more 👎 just above a watch's threshold raises that threshold |
+| 👍 / 👎 on an alert | Rate it. Once 3 alerts that scored near or below a watch's threshold get 👎, the threshold moves just above the highest of them |
 
 ## Moving it to another chat
 
@@ -47,6 +47,7 @@ Then send `/start <PAIRING_CODE>` from the new chat.
 ## How it stays private
 
 - Telegram sends `TELEGRAM_WEBHOOK_SECRET` in a header with every update, and the Worker rejects anything without it.
-- Only the paired owner chat can create watches or press buttons.
+- Only the paired owner chat can create watches or press buttons. Pairing only works from a private chat, and only 10
+  wrong pairing codes are accepted per day.
 - Each update is handled once, even if Telegram delivers it twice.
 - The Worker answers Telegram right away and does the slow LLM work afterwards, so Telegram doesn't retry.

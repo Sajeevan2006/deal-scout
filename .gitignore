@@ -6,6 +6,8 @@ data/deal-scout.db-*
 # Your own copy of wrangler.toml.example (has your D1 database id)
 wrangler.toml
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
 .env
 
 # Logs

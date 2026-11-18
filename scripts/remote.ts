@@ -10,7 +10,9 @@ const USAGE = `Usage: npm run remote -- <command>
   watch "<request>"              create a watch (e.g. "portable charger under $40")
   remove <id>                    stop a watch
   thresholds <id> <high> <low>   set a watch's thresholds
-  check [--force] [--alert-existing]   run a feed check now (obeys the 2 minute guard unless --force)
+  check [--alert-existing] [--force]   run a feed check now (always obeys the 2 minute gap and 429 back offs)
+                                 --alert-existing scores every post in the feed, not just new ones
+                                 --force retries once after a block
   feedback <alertId> up|down     rate an alert
   unblock                        allow live fetches again after a block (look into why first)
   telegram:setup                 register the webhook and bot commands with Telegram
