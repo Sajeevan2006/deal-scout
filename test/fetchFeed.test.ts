@@ -71,9 +71,14 @@ describe("2 minute fetch guard", () => {
     expect(checkFetchGuard(state, NOW, config.minFetchIntervalMs, false).allowed).toBe(true);
   });
 
-  it("lets --force skip the 2 minute rule", () => {
+  it("keeps the 2 minute rule even with --force", () => {
     const state = stateWith({ lastCheckedAt: "2026-10-25T11:59:59.000Z" });
-    expect(checkFetchGuard(state, NOW, config.minFetchIntervalMs, true).allowed).toBe(true);
+    expect(checkFetchGuard(state, NOW, config.minFetchIntervalMs, true).allowed).toBe(false);
+  });
+
+  it("does not let --force retry a block within 2 minutes", () => {
+    const state = stateWith({ lastCheckedAt: "2026-10-25T11:59:00.000Z", lastStatus: "blocked" });
+    expect(checkFetchGuard(state, NOW, config.minFetchIntervalMs, true).allowed).toBe(false);
   });
 
   it("refuses after a block unless forced", () => {
@@ -139,6 +144,21 @@ describe("fetchFeed", () => {
     const result = await fetchFeed(emptyFeedState(FEED_URL), config, { fetchFn, clock: fakeClock(), logger: createRecordingLogger() });
     expect(result).toMatchObject({ outcome: "blocked", status: 302, finalUrl: "https://rfd.tollbit.com/feed/forum/9" });
     expect(fetchFn.requests).toHaveLength(1);
+  });
+
+  it("treats a redirect down to http as blocked", async () => {
+    const redirect = new Response(null, { status: 301, headers: { Location: "http://forums.redflagdeals.com/feed/forum/9" } });
+    const fetchFn = scriptedFetch([redirect]);
+    const result = await fetchFeed(emptyFeedState(FEED_URL), config, { fetchFn, clock: fakeClock(), logger: createRecordingLogger() });
+    expect(result).toMatchObject({ outcome: "blocked", finalUrl: "http://forums.redflagdeals.com/feed/forum/9" });
+    expect(fetchFn.requests).toHaveLength(1);
+  });
+
+  it("reports a redirect to an invalid URL as an error instead of throwing", async () => {
+    const redirect = new Response(null, { status: 302, headers: { Location: "http://[broken" } });
+    const fetchFn = scriptedFetch([redirect]);
+    const result = await fetchFeed(emptyFeedState(FEED_URL), config, { fetchFn, clock: fakeClock(), logger: createRecordingLogger() });
+    expect(result).toMatchObject({ outcome: "error", message: expect.stringContaining("invalid URL") });
   });
 
   it("follows a same host redirect", async () => {

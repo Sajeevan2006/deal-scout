@@ -47,16 +47,7 @@ export function checkFetchGuard(
       };
     }
   }
-  if (force) {
-    return { allowed: true };
-  }
-  if (state.lastStatus === "blocked") {
-    return {
-      allowed: false,
-      message: "The last live fetch was blocked, so no automatic retries. Look into it first, then pass --force to try once.",
-      retryInSeconds: null,
-    };
-  }
+  // The minimum gap always applies, --force or not
   if (state.lastCheckedAt) {
     const lastRequestMs = Date.parse(state.lastCheckedAt);
     const elapsedMs = nowMs - lastRequestMs;
@@ -64,10 +55,18 @@ export function checkFetchGuard(
       const waitSeconds = Math.ceil((minIntervalMs - elapsedMs) / 1000);
       return {
         allowed: false,
-        message: `Last live request was ${Math.max(0, Math.round(elapsedMs / 1000))}s ago. Minimum gap is ${minIntervalMs / 1000}s, try again in ${waitSeconds}s (or pass --force).`,
+        message: `Last live request was ${Math.max(0, Math.round(elapsedMs / 1000))}s ago. Minimum gap is ${minIntervalMs / 1000}s, try again in ${waitSeconds}s.`,
         retryInSeconds: waitSeconds,
       };
     }
+  }
+  // --force only means "try once more after a block"
+  if (state.lastStatus === "blocked" && !force) {
+    return {
+      allowed: false,
+      message: "The last live fetch was blocked, so no automatic retries. Look into it first, then pass --force to try once.",
+      retryInSeconds: null,
+    };
   }
   return { allowed: true };
 }
@@ -147,14 +146,23 @@ async function requestOnce(state: FeedState, config: DealScoutConfig, deps: Feed
         retryable: false,
       };
     }
-    const nextUrl = new URL(location, currentUrl);
-    if (nextUrl.hostname !== config.allowedFeedHost) {
+    let nextUrl: URL;
+    try {
+      nextUrl = new URL(location, currentUrl);
+    } catch {
+      return {
+        result: { outcome: "error", status: hopResponse.status, message: `Redirect to an invalid URL: ${location}`, requestedAt },
+        retryable: false,
+      };
+    }
+    // Same host and still https, anything else is treated as a block
+    if (nextUrl.hostname !== config.allowedFeedHost || nextUrl.protocol !== "https:") {
       return {
         result: {
           outcome: "blocked",
           status: hopResponse.status,
           finalUrl: nextUrl.href,
-          message: `Redirected away from ${config.allowedFeedHost}`,
+          message: `Redirected away from https://${config.allowedFeedHost}`,
           requestedAt,
         },
         retryable: false,
