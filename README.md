@@ -16,6 +16,10 @@ asked for. Matching is by meaning, not keywords: "portable charger" matches "[Am
 Everything runs on the **Cloudflare free plan** (Workers, D1, Workers AI). Each deployment belongs to one person: clone
 it, deploy it to your own Cloudflare account, pair your own Telegram bot.
 
+> **Status: match thresholds are still being tuned.** The defaults work but aren't calibrated yet, so expect some
+> borderline posts to need the LLM judge and the occasional miss or false alert. See
+> [Tuning thresholds with the eval](#tuning-thresholds-with-the-eval).
+
 ## Contents
 
 - [How it works](#how-it-works)
@@ -196,6 +200,11 @@ All `/api` routes need `Authorization: Bearer <ADMIN_TOKEN>`. `npm run remote --
 `npm run status` and `npm run telegram:setup` are shortcuts for the matching `remote` commands.
 
 ## Tuning thresholds with the eval
+
+> **In progress.** The defaults below haven't been calibrated on labeled data yet. A first live check showed
+> `bge-base-en-v1.5` scoring unrelated posts around 0.54–0.67, so with `low` at 0.6 the judge sees more posts than it
+> should (it rejected them correctly). The plan: collect a few days of real posts, label them, run the eval, and update
+> the defaults here.
 
 Each watch has a `high` and `low` threshold. The defaults for `bge-base-en-v1.5` (0.8 / 0.6) are deliberately
 conservative starting guesses: the judge covers the band in between, and 👎 feedback can only raise thresholds. Measure
