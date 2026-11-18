@@ -25,13 +25,11 @@ optional swap for the LLM parts.
 
 ```mermaid
 flowchart TD
-  you(["You"]) -->|"portable charger under $60"| planner["LLM turns it into a watch"]
-  planner --> watches[("Your watches")]
-  cron(["Every 10 minutes"]) --> feed["New posts from<br/>RFD Hot Deals"]
-  feed --> match["Match by meaning<br/>LLM double checks close calls"]
-  watches --> match
-  match -->|"match"| alert["Telegram alert<br/>👍 / 👎"]
-  alert --> you
+  you(["You: portable charger under $60"]) --> planner["LLM turns it into a watch"]
+  cron(["Every 10 minutes"]) --> feed["New posts from RFD Hot Deals"]
+  planner --> match["Match by meaning<br/>LLM double checks close calls"]
+  feed --> match
+  match --> alert["Telegram alert with 👍 / 👎"]
 ```
 
 ## Setup
