@@ -1,11 +1,10 @@
-import type { WatchPlanner } from "../core/ports/watchPlanner";
-import type { WatchPlan } from "../core/types";
+import type { WatchPlanner } from "../ports/watchPlanner";
+import type { WatchPlan } from "../types";
+import { MAX_LABEL_LENGTH } from "./watchPlan";
 
-// PLACEHOLDER planner: simple rules instead of an LLM. It can't add synonyms or related
-// products to intentDescription, which is the main thing the real planner is for.
-// TODO(integration): replace with the LLM planner that calls the create_watch tool
-
-const MAX_LABEL_LENGTH = 60;
+// Rule based planner: pulls out a "$" max price and "no/not/without" excludes. It can't add
+// synonyms or related products the way the LLM planner does. Used offline, and as the
+// fallback when the LLM call fails, so creating a watch always works.
 const PRICE_PHRASE =
   /(?:\b(?:under|below|less than|max(?:imum)?|up to|at most|no more than)\s*)?\$\s?(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?:\s*(?:or less|max))?/i;
 const EXCLUDE_PHRASE = /\b(?:no|not|without|excluding|except)\s+([^,.;]+)/gi;
@@ -48,7 +47,7 @@ export function planWatchWithRules(userRequest: string): WatchPlan {
   return { label, intentDescription, maxPrice, excludeTerms, stores: [] };
 }
 
-export function createStubWatchPlanner(): WatchPlanner {
+export function createRuleWatchPlanner(): WatchPlanner {
   return {
     async planWatch(userRequest) {
       return planWatchWithRules(userRequest);

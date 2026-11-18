@@ -1,6 +1,6 @@
 import type { WatchPlan } from "../types";
 
 export interface WatchPlanner {
-  // TODO(integration): big LLM call with tool calling (see watches/watchTools.ts)
+  // Turns a free text request ("portable charger under $40, no cables") into a watch plan
   planWatch(userRequest: string): Promise<WatchPlan>;
 }

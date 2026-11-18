@@ -1,6 +1,6 @@
 import type { Post, Watch } from "../types";
 
 export interface BorderlineJudge {
-  // TODO(integration): small LLM yes/no check for scores between the thresholds
+  // Asked only for scores between a watch's low and high thresholds
   isMatch(post: Post, watch: Watch): Promise<boolean>;
 }

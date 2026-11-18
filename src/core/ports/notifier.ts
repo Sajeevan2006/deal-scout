@@ -1,6 +1,6 @@
 import type { DealAlert } from "../types";
 
 export interface Notifier {
-  // TODO(integration): Telegram bot message goes behind this
+  // Telegram when configured, logs otherwise
   sendAlert(alert: DealAlert): Promise<void>;
 }
