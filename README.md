@@ -24,18 +24,23 @@ optional swap for the LLM parts.
 ## Architecture
 
 ```mermaid
-flowchart LR
-  cron(["Cron, every 10 min"]) --> fetch["Fetch RFD Atom feed<br/>304 aware, 2 min guard"]
-  fetch --> parse["Parse, drop posts<br/>already seen"]
-  parse --> embed["Embed new posts<br/>Workers AI bge-base"]
-  embed --> score["Score vs watches<br/>+ hard filters"]
-  score -->|"score ≥ high"| alert["Claim alert<br/>once per watch + post"]
-  score -->|"in between"| judge["LLM judge<br/>capped per run and day"]
-  judge -->|yes| alert
-  alert --> notify["Telegram, or logs<br/>👍 / 👎"]
+flowchart TD
+  subgraph check["Every 10 minutes"]
+    cron(["Cloudflare Cron"]) --> fetch["Fetch RFD Atom feed<br/>304 aware, 2 min guard"]
+    fetch --> parse["Parse, drop posts already seen"]
+    parse --> embed["Embed new posts<br/>Workers AI bge-base"]
+    embed --> score["Score vs watches + hard filters<br/>price, store, excluded words"]
+    score -->|"score ≥ high"| alert["Claim alert<br/>once per watch + post"]
+    score -->|"in between"| judge["LLM judge<br/>capped per run and day"]
+    judge -->|yes| alert
+    alert --> notify["Telegram, or logs<br/>with 👍 / 👎"]
+  end
 
-  you(["You"]) -->|"portable charger under $60"| hook["Telegram webhook<br/>secret checked"]
-  hook --> planner["LLM planner"]
+  subgraph ask["When you message the bot"]
+    you(["You: portable charger under $60"]) --> hook["Telegram webhook<br/>secret checked"]
+    hook --> planner["LLM planner<br/>synonyms, brands, price limit"]
+  end
+
   planner --> watches[("D1: watches")]
   watches -.-> score
   notify -.->|"👎 raises threshold"| watches
