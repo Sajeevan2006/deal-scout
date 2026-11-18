@@ -22,18 +22,20 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.core.json"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "fast-xml-parser": "^5.11.2"
+    "@anthropic-ai/sdk": "^1.10.0",
+    "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^20.19.43",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "wrangler": "^4.164.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "workerd@1.20261117.1": true
   }
 }
