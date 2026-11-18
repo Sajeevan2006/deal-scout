@@ -11,7 +11,7 @@ import type { Notifier } from "../src/core/ports/notifier";
 import type { Clock, DealAlert, FeedFetchResult, FeedState } from "../src/core/types";
 import { createFileFeedSource } from "../src/local/fileFeedSource";
 import { openSqliteDatabase, type SqliteDatabase } from "../src/local/sqliteDatabase";
-import { createRecordingLogger, fixturesDir, realFeedPath } from "./helpers";
+import { createRecordingLogger, fixturesDir, realFeedPath, TEST_EMBEDDING_MODEL } from "./helpers";
 
 const migrationsDir = path.join(fixturesDir, "..", "..", "migrations");
 const config = buildConfig();
@@ -19,6 +19,7 @@ const BOSE_TITLE = "[Costco] Bose QuietComfort SE Headphones";
 
 // Puts anything mentioning "bose" right on the watch vector, everything else far away
 const keywordEmbedder: Embedder = {
+  model: TEST_EMBEDDING_MODEL,
   async embed(texts) {
     const vectors: number[][] = [];
     for (const text of texts) {
@@ -92,6 +93,7 @@ async function addBoseWatch(): Promise<number> {
     userId: "local",
     plan: { label: "noise cancelling headphones", intentDescription: "bose headphones", maxPrice: null, excludeTerms: [], stores: [] },
     intentEmbedding: [1, 0],
+    embeddingModel: TEST_EMBEDDING_MODEL,
     highThreshold: 0.8,
     lowThreshold: 0.4,
     createdAt: "2026-10-25T00:00:00.000Z",
@@ -267,6 +269,7 @@ describe("runFeedCheck matching details", () => {
   it("counts judge calls for borderline scores", async () => {
     await addBoseWatch();
     const borderlineEmbedder: Embedder = {
+      model: TEST_EMBEDDING_MODEL,
       async embed(texts) {
         const vectors: number[][] = [];
         for (const text of texts) {
@@ -297,5 +300,164 @@ describe("runFeedCheck matching details", () => {
     expect(await listActiveWatches(db)).toHaveLength(0);
     const summary = await runFeedCheck(depsWith(createFileFeedSource(realFeedPath)), { alertExisting: true });
     expect(summary.alerted).toBe(0);
+  });
+});
+
+describe("runFeedCheck retries instead of losing posts", () => {
+  const okResult = (xml: string): FeedFetchResult => ({
+    outcome: "ok",
+    xml,
+    etag: null,
+    lastModified: "Sun, 25 Oct 2026 22:37:46 GMT",
+    requestedAt: "2026-10-26T12:00:00.000Z",
+  });
+
+  it("leaves posts unseen and drops the validators when embedding fails, then catches up", async () => {
+    await addBoseWatch();
+    const { readFileSync } = await import("node:fs");
+    const xml = readFileSync(realFeedPath, "utf8");
+    const failingEmbedder: Embedder = {
+      model: TEST_EMBEDDING_MODEL,
+      async embed() {
+        throw new Error("Workers AI is down");
+      },
+    };
+    const failed = await runFeedCheck(depsWith(scriptedSource([okResult(xml)]), { embedder: failingEmbedder }), { alertExisting: true });
+    expect(failed.outcome).toBe("error");
+    expect(failed.message).toMatch(/retried next run: Workers AI is down/);
+    expect(await countRows("seen_posts")).toBe(0);
+    const state = await getFeedState(db, config.feedUrl);
+    expect(state.lastModified).toBeNull();
+    expect(state.lastStatus).toBe("processing_error");
+
+    const source = scriptedSource([okResult(xml)]);
+    const recovered = await runFeedCheck(depsWith(source), { alertExisting: true });
+    expect(source.statesSeen[0]!.lastModified).toBeNull();
+    expect(recovered).toMatchObject({ outcome: "ok", newPosts: 15, alerted: 1 });
+    expect(await countRows("seen_posts")).toBe(15);
+  });
+
+  it("keeps a post unseen when its alert can't be sent, and sends it once on the next run", async () => {
+    await addBoseWatch();
+    let telegramUp = false;
+    const flakyNotifier: Notifier = {
+      async sendAlert(alert) {
+        if (!telegramUp) {
+          throw new Error("telegram down");
+        }
+        notifier.alerts.push(alert);
+      },
+    };
+    const feedSource = createFileFeedSource(realFeedPath);
+    const first = await runFeedCheck(depsWith(feedSource, { notifier: flakyNotifier }), { alertExisting: true });
+    expect(first).toMatchObject({ failedAlerts: 1, retryPostIds: [expect.stringContaining("t=")] });
+    expect(await countRows("seen_posts")).toBe(14);
+
+    telegramUp = true;
+    const second = await runFeedCheck(depsWith(feedSource, { notifier: flakyNotifier }));
+    expect(second).toMatchObject({ newPosts: 1, alerted: 1, failedAlerts: 0 });
+    expect(notifier.alerts.map((alert) => alert.post.title)).toEqual([BOSE_TITLE]);
+    expect(await countRows("seen_posts")).toBe(15);
+  });
+});
+
+describe("runFeedCheck judge budget", () => {
+  const borderlineEmbedder: Embedder = {
+    model: TEST_EMBEDDING_MODEL,
+    async embed(texts) {
+      // Every post lands in the borderline band of the Bose watch
+      return texts.map(() => [0.6, 0.8]);
+    },
+  };
+
+  it("stops calling the judge when the per run cap is reached", async () => {
+    await addBoseWatch();
+    const judgeCalls: string[] = [];
+    const yesJudge: BorderlineJudge = {
+      async isMatch(post) {
+        judgeCalls.push(post.title);
+        return false;
+      },
+    };
+    const cappedConfig = buildConfig({ maxJudgeCallsPerRun: 3 });
+    const summary = await runFeedCheck(
+      depsWith(createFileFeedSource(realFeedPath), { embedder: borderlineEmbedder, judge: yesJudge, config: cappedConfig }),
+      { alertExisting: true },
+    );
+    expect(judgeCalls).toHaveLength(3);
+    expect(summary).toMatchObject({ judgeCalls: 3, judgeSkipped: 12 });
+    const counter = await db.prepare("SELECT value FROM app_state WHERE key = 'judge_calls:2026-10-26'").first<{ value: string }>();
+    expect(counter?.value).toBe("3");
+  });
+
+  it("respects the daily cap across runs", async () => {
+    await addBoseWatch();
+    await db.prepare("INSERT INTO app_state (key, value, updated_at) VALUES ('judge_calls:2026-10-26', '299', 'x')").run();
+    const summary = await runFeedCheck(depsWith(createFileFeedSource(realFeedPath), { embedder: borderlineEmbedder }), {
+      alertExisting: true,
+    });
+    expect(summary.judgeCalls).toBe(1);
+    expect(summary.judgeSkipped).toBe(14);
+  });
+
+  it("counts judge errors as no alert without failing the run", async () => {
+    await addBoseWatch();
+    const brokenJudge: BorderlineJudge = {
+      async isMatch() {
+        throw new Error("JSON Mode couldn't be met");
+      },
+    };
+    const summary = await runFeedCheck(
+      depsWith(createFileFeedSource(realFeedPath), { embedder: borderlineEmbedder, judge: brokenJudge, config: buildConfig({ maxJudgeCallsPerRun: 2 }) }),
+      { alertExisting: true },
+    );
+    expect(summary).toMatchObject({ outcome: "ok", judgeErrors: 2, alerted: 0 });
+    expect(await countRows("seen_posts")).toBe(15);
+  });
+});
+
+describe("runFeedCheck housekeeping", () => {
+  it("re-embeds watches made with another embedder before matching", async () => {
+    await db.prepare("INSERT INTO users (id, display_name, created_at) VALUES ('local', 'Me', 'x')").run();
+    await insertWatch(db, {
+      userId: "local",
+      plan: { label: "headphones", intentDescription: "bose headphones", maxPrice: null, excludeTerms: [], stores: [] },
+      intentEmbedding: [0, 1],
+      embeddingModel: "some/old-model",
+      highThreshold: 0.8,
+      lowThreshold: 0.4,
+      createdAt: "2026-10-25T00:00:00.000Z",
+    });
+    const summary = await runFeedCheck(depsWith(createFileFeedSource(realFeedPath)), { alertExisting: true });
+    expect(summary.alerted).toBe(1);
+    const [watch] = await listActiveWatches(db);
+    expect(watch!.embeddingModel).toBe(TEST_EMBEDDING_MODEL);
+  });
+
+  it("marks the first run done even when the feed is empty", async () => {
+    const emptyFeed = '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>x</title></feed>';
+    const source = scriptedSource([
+      { outcome: "ok", xml: emptyFeed, etag: null, lastModified: null, requestedAt: null },
+      { outcome: "ok", xml: emptyFeed, etag: null, lastModified: null, requestedAt: null },
+    ]);
+    expect((await runFeedCheck(depsWith(source))).firstRun).toBe(true);
+    expect((await runFeedCheck(depsWith(source))).firstRun).toBe(false);
+  });
+
+  it("deletes seen posts older than the retention window", async () => {
+    await db
+      .prepare("INSERT INTO seen_posts (id, title, link, published_at, seen_at) VALUES ('old', 't', 'l', NULL, '2026-08-01T00:00:00.000Z')")
+      .run();
+    await db.prepare("INSERT INTO app_state (key, value, updated_at) VALUES ('seen_initialized', '1', 'x')").run();
+    await runFeedCheck(depsWith(createFileFeedSource(realFeedPath)));
+    const old = await db.prepare("SELECT id FROM seen_posts WHERE id = 'old'").first();
+    expect(old).toBeNull();
+    expect(await countRows("seen_posts")).toBe(15);
+  });
+
+  it("stores the start of each post body for building eval data", async () => {
+    await runFeedCheck(depsWith(createFileFeedSource(realFeedPath)));
+    const row = await db.prepare("SELECT body_snippet FROM seen_posts WHERE title = ?").bind("[Costco] Ninja Dual Brew Coffee Maker").first<{ body_snippet: string }>();
+    expect(row?.body_snippet).toBe("Found at Elgin Mills Costco");
   });
 });

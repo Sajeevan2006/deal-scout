@@ -43,13 +43,19 @@ export function makePost(overrides: Partial<Post> = {}): Post {
   };
 }
 
-export function makeWatch(overrides: Partial<Watch> = {}): Watch {
+export type WatchOverrides = Omit<Partial<Watch>, "intentEmbedding"> & { intentEmbedding?: ArrayLike<number> };
+
+export const TEST_EMBEDDING_MODEL = "test/embedder";
+
+export function makeWatch(overrides: WatchOverrides = {}): Watch {
+  const { intentEmbedding, ...rest } = overrides;
   return {
     id: 1,
     userId: "local",
     label: "portable charger",
     intentDescription: "portable charger",
-    intentEmbedding: [1, 0],
+    intentEmbedding: Float32Array.from(intentEmbedding ?? [1, 0]),
+    embeddingModel: TEST_EMBEDDING_MODEL,
     maxPrice: null,
     excludeTerms: [],
     stores: [],
@@ -57,6 +63,6 @@ export function makeWatch(overrides: Partial<Watch> = {}): Watch {
     lowThreshold: 0.4,
     active: true,
     createdAt: "2026-10-25T00:00:00.000Z",
-    ...overrides,
+    ...rest,
   };
 }

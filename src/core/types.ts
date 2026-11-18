@@ -20,7 +20,9 @@ export interface WatchPlan {
 export interface Watch extends WatchPlan {
   id: number;
   userId: string;
-  intentEmbedding: number[];
+  intentEmbedding: Float32Array;
+  // Which embedding model made intentEmbedding. Vectors from different models can't be compared.
+  embeddingModel: string;
   highThreshold: number;
   lowThreshold: number;
   active: boolean;
@@ -62,6 +64,10 @@ export type DecisionReason =
   | "below_low"
   | "judge_yes"
   | "judge_no"
+  // The judge threw, so the post is skipped for this watch
+  | "judge_error"
+  // The per run or per day judge budget ran out
+  | "judge_skipped"
   | `filtered_${FilterRejection}`;
 
 export interface MatchDecision {

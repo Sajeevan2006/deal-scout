@@ -1,8 +1,9 @@
+import { FAKE_EMBEDDING_MODEL } from "../core/config";
 import type { Embedder } from "../core/ports/embedder";
 
-// PLACEHOLDER embedder: a hashed bag of words. It only captures word overlap, not meaning,
-// so "portable charger" will NOT match "power bank". Real embeddings fix that.
-// TODO(integration): replace with the Workers AI embedder (e.g. @cf/baai/bge-base-en-v1.5)
+// Offline embedder for tests and for running without a Cloudflare account: a hashed bag of
+// words. It only captures word overlap, not meaning, so "portable charger" will NOT match
+// "power bank". The Worker uses Workers AI embeddings instead.
 
 const STOP_WORDS = new Set(["the", "and", "or", "for", "with", "of", "to", "in", "on", "at", "is", "it", "this", "that", "my", "w"]);
 
@@ -47,6 +48,7 @@ export function embedTextWithHashing(text: string, dimensions: number): number[]
 
 export function createFakeEmbedder(dimensions = 256): Embedder {
   return {
+    model: dimensions === 256 ? FAKE_EMBEDDING_MODEL : `local/fake-hash-${dimensions}`,
     async embed(texts) {
       const vectors: number[][] = [];
       for (const text of texts) {

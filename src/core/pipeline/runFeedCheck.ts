@@ -1,17 +1,22 @@
 import type { DealScoutConfig } from "../config";
 import {
   claimAlert,
-  countSeenPosts,
   findSeenPostIds,
+  getCounter,
   getFeedState,
-  insertSeenPost,
+  incrementCounter,
+  insertSeenPosts,
+  isSeenInitialized,
+  judgeCounterKey,
   listActiveWatches,
+  markSeenInitialized,
+  pruneOldRecords,
   recordFeedRequest,
   releaseAlert,
   saveFeedValidators,
 } from "../db/queries";
 import { parseFeed } from "../feed/parseFeed";
-import { matchPosts } from "../matching/matchPosts";
+import { matchPosts, type JudgeBudget } from "../matching/matchPosts";
 import { extractTags } from "../matching/postText";
 import type { BorderlineJudge } from "../ports/borderlineJudge";
 import type { Database } from "../ports/database";
@@ -19,6 +24,7 @@ import type { Embedder } from "../ports/embedder";
 import type { FeedSource } from "../ports/feedSource";
 import type { Notifier } from "../ports/notifier";
 import type { Clock, DealAlert, FeedFetchOutcome, FeedFetchResult, Logger, MatchDecision, Post } from "../types";
+import { refreshStaleEmbeddings } from "../watches/refreshEmbeddings";
 
 export interface FeedCheckDeps {
   db: Database;
@@ -46,10 +52,16 @@ export interface FeedCheckSummary {
   duplicatesSkipped: number;
   failedAlerts: number;
   judgeCalls: number;
+  judgeErrors: number;
+  judgeSkipped: number;
+  // Posts whose alert could not be sent. They stay unseen so the next run tries again.
+  retryPostIds: string[];
   // When the next live request makes sense (rate limit or guard)
   retryInSeconds: number | null;
   decisions: MatchDecision[];
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function emptySummary(outcome: FeedFetchOutcome, message: string): FeedCheckSummary {
   return {
@@ -63,6 +75,9 @@ function emptySummary(outcome: FeedFetchOutcome, message: string): FeedCheckSumm
     duplicatesSkipped: 0,
     failedAlerts: 0,
     judgeCalls: 0,
+    judgeErrors: 0,
+    judgeSkipped: 0,
+    retryPostIds: [],
     retryInSeconds: null,
     decisions: [],
   };
@@ -152,72 +167,51 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOptions = {}): Promise<FeedCheckSummary> {
-  const { db, feedSource, logger, clock, config } = deps;
-  const feedUrl = feedSource.feedUrl;
+async function buildJudgeBudget(deps: FeedCheckDeps): Promise<{ budget: JudgeBudget; counterKey: string }> {
+  const counterKey = judgeCounterKey(deps.clock.now());
+  const usedToday = await getCounter(deps.db, counterKey);
+  const leftToday = Math.max(0, deps.config.maxJudgeCallsPerDay - usedToday);
+  return { budget: { remaining: Math.min(deps.config.maxJudgeCallsPerRun, leftToday), used: 0 }, counterKey };
+}
 
-  // 1-2. Load state and fetch
-  const feedState = await getFeedState(db, feedUrl);
-  const fetchResult = await feedSource.fetchLatest(feedState);
-  await recordFetchAttempt(db, feedUrl, fetchResult, config);
-  // The fetcher already logged the outcome, callers print summary.message
-  if (fetchResult.outcome !== "ok") {
-    return summaryForFailedFetch(fetchResult, config);
+// Matches new posts and sends alerts. Throws if embedding fails, so the caller can leave the
+// posts unseen and retry them next run.
+async function matchAndAlert(deps: FeedCheckDeps, newPosts: Post[], summary: FeedCheckSummary): Promise<void> {
+  const { db, clock, logger, config } = deps;
+  if (newPosts.length === 0) {
+    return;
   }
-
-  // 3. Parse
-  let parsedPosts: Post[];
+  const activeWatches = await listActiveWatches(db);
+  if (activeWatches.length === 0) {
+    return;
+  }
+  const watches = await refreshStaleEmbeddings(db, activeWatches, deps.embedder, config, logger);
+  const { budget, counterKey } = await buildJudgeBudget(deps);
+  let decisions: MatchDecision[];
   try {
-    parsedPosts = parseFeed(fetchResult.xml, logger);
-  } catch (error) {
-    await recordFeedRequest(db, feedUrl, null, "parse_error", null);
-    return emptySummary("error", `Could not parse feed: ${describeError(error)}`);
-  }
-  const fetchedPosts = keepFirstOfEachId(parsedPosts);
-
-  // 4-5. Drop seen posts, remember the new ones
-  const seenCountBefore = await countSeenPosts(db);
-  const firstRun = seenCountBefore === 0;
-  const fetchedIds: string[] = [];
-  for (const post of fetchedPosts) {
-    fetchedIds.push(post.id);
-  }
-  const alreadySeenIds = await findSeenPostIds(db, fetchedIds);
-  const newPosts: Post[] = [];
-  for (const post of fetchedPosts) {
-    if (!alreadySeenIds.has(post.id)) {
-      newPosts.push(post);
+    decisions = await matchPosts(newPosts, watches, {
+      embedder: deps.embedder,
+      judge: deps.judge,
+      bodyChars: config.matchTextBodyChars,
+      judgeBudget: budget,
+    });
+  } finally {
+    if (budget.used > 0) {
+      await incrementCounter(db, counterKey, budget.used, clock.now().toISOString());
     }
   }
-  const seenAt = clock.now().toISOString();
-  for (const post of newPosts) {
-    await insertSeenPost(db, post, seenAt);
-  }
-
-  const summary = emptySummary("ok", "");
-  summary.firstRun = firstRun;
-  summary.fetched = fetchedPosts.length;
-  summary.newPosts = newPosts.length;
-
-  if (firstRun && options.alertExisting !== true) {
-    await saveFeedValidators(db, feedUrl, fetchResult.etag, fetchResult.lastModified);
-    summary.message = `First run: marked ${newPosts.length} existing posts as seen without alerting (use --alert-existing to alert on them).`;
-    return summary;
-  }
-
-  // 6-7. Match
-  const watches = await listActiveWatches(db);
-  const decisions = await matchPosts(newPosts, watches, {
-    embedder: deps.embedder,
-    judge: deps.judge,
-    bodyChars: config.matchTextBodyChars,
-  });
   summary.decisions = decisions;
 
-  // 8. Alert, once per watch and post pair
   for (const decision of decisions) {
     if (decision.usedJudge) {
       summary.judgeCalls += 1;
+    }
+    if (decision.reason === "judge_error") {
+      summary.judgeErrors += 1;
+      logger.warn(`Judge failed for "${decision.post.title}" vs "${decision.watch.label}": ${decision.detail}`);
+    }
+    if (decision.reason === "judge_skipped") {
+      summary.judgeSkipped += 1;
     }
     if (!decision.shouldAlert) {
       continue;
@@ -234,18 +228,107 @@ export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOption
       summary.alerted += 1;
     } catch (error) {
       summary.failedAlerts += 1;
-      logger.error(`Failed to send alert for "${decision.post.title}": ${describeError(error)}`);
+      logger.error(`Failed to send alert for "${decision.post.title}", will retry next run: ${describeError(error)}`);
       await releaseAlert(db, alertId);
+      if (!summary.retryPostIds.includes(decision.post.id)) {
+        summary.retryPostIds.push(decision.post.id);
+      }
     }
   }
+  if (summary.judgeSkipped > 0) {
+    logger.warn(`Judge budget ran out, ${summary.judgeSkipped} borderline matches were skipped this run.`);
+  }
+}
 
-  // 9. Save validators only after everything above worked
-  await saveFeedValidators(db, feedUrl, fetchResult.etag, fetchResult.lastModified);
+function pruneCutoffs(now: Date, config: DealScoutConfig) {
+  const nowMs = now.getTime();
+  return {
+    seenPostsBefore: new Date(nowMs - config.seenPostRetentionDays * DAY_MS).toISOString(),
+    telegramUpdatesBefore: new Date(nowMs - 2 * DAY_MS).toISOString(),
+    countersBeforeDate: new Date(nowMs - 7 * DAY_MS).toISOString().slice(0, 10),
+  };
+}
 
-  // 10. Summary
+export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOptions = {}): Promise<FeedCheckSummary> {
+  const { db, feedSource, logger, clock, config } = deps;
+  const feedUrl = feedSource.feedUrl;
+
+  // 1. Load state and fetch
+  const feedState = await getFeedState(db, feedUrl);
+  const fetchResult = await feedSource.fetchLatest(feedState);
+  await recordFetchAttempt(db, feedUrl, fetchResult, config);
+  // The fetcher already logged the outcome, callers print summary.message
+  if (fetchResult.outcome !== "ok") {
+    return summaryForFailedFetch(fetchResult, config);
+  }
+
+  // 2. Parse
+  let parsedPosts: Post[];
+  try {
+    parsedPosts = parseFeed(fetchResult.xml, logger);
+  } catch (error) {
+    await recordFeedRequest(db, feedUrl, null, "parse_error", null);
+    return emptySummary("error", `Could not parse feed: ${describeError(error)}`);
+  }
+  const fetchedPosts = keepFirstOfEachId(parsedPosts);
+
+  // 3. Find the posts we haven't handled yet
+  const alreadySeenIds = await findSeenPostIds(
+    db,
+    fetchedPosts.map((post) => post.id),
+  );
+  const newPosts = fetchedPosts.filter((post) => !alreadySeenIds.has(post.id));
+  const firstRun = !(await isSeenInitialized(db));
+
+  const summary = emptySummary("ok", "");
+  summary.firstRun = firstRun;
+  summary.fetched = fetchedPosts.length;
+  summary.newPosts = newPosts.length;
+
+  if (firstRun && options.alertExisting !== true) {
+    const now = clock.now().toISOString();
+    await insertSeenPosts(db, newPosts, now, config.storedBodyChars);
+    await markSeenInitialized(db, now);
+    await saveFeedValidators(db, feedUrl, fetchResult.etag, fetchResult.lastModified);
+    summary.message = `First run: marked ${newPosts.length} existing posts as seen without alerting (use --alert-existing to alert on them).`;
+    return summary;
+  }
+
+  // 4. Match and alert. Posts are only marked seen after this works, so a failed embedding
+  // call means they get retried next run instead of being lost.
+  try {
+    await matchAndAlert(deps, newPosts, summary);
+  } catch (error) {
+    // Forget the validators so the next run gets the full feed instead of a 304
+    await saveFeedValidators(db, feedUrl, null, null);
+    await recordFeedRequest(db, feedUrl, null, "processing_error", null);
+    summary.outcome = "error";
+    summary.message = `Matching failed, these ${newPosts.length} posts will be retried next run: ${describeError(error)}`;
+    logger.error(summary.message);
+    return summary;
+  }
+
+  // 5. Remember the posts, then the validators, then tidy up. Posts whose alert failed stay
+  // unseen, and the validators are dropped so the next run gets the full feed again.
+  const now = clock.now();
+  const handledPosts = newPosts.filter((post) => !summary.retryPostIds.includes(post.id));
+  await insertSeenPosts(db, handledPosts, now.toISOString(), config.storedBodyChars);
+  if (firstRun) {
+    await markSeenInitialized(db, now.toISOString());
+  }
+  if (summary.retryPostIds.length > 0) {
+    await saveFeedValidators(db, feedUrl, null, null);
+  } else {
+    await saveFeedValidators(db, feedUrl, fetchResult.etag, fetchResult.lastModified);
+  }
+  await pruneOldRecords(db, pruneCutoffs(now, config));
+
+  // 6. Summary
   summary.message =
     `Fetched ${summary.fetched}, new ${summary.newPosts}, matched ${summary.matched}, ` +
     `alerted ${summary.alerted}, judge calls ${summary.judgeCalls}` +
+    (summary.judgeErrors > 0 ? `, judge errors ${summary.judgeErrors}` : "") +
+    (summary.judgeSkipped > 0 ? `, judge skipped ${summary.judgeSkipped}` : "") +
     (summary.duplicatesSkipped > 0 ? `, duplicates skipped ${summary.duplicatesSkipped}` : "") +
     (summary.failedAlerts > 0 ? `, failed alerts ${summary.failedAlerts}` : "");
   return summary;

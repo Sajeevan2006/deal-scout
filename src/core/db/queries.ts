@@ -1,7 +1,10 @@
+import { decodeEmbedding, encodeEmbedding } from "../matching/vectors";
 import type { Database } from "../ports/database";
 import type { FeedState, FeedbackRating, FeedbackWithScore, Post, Watch, WatchPlan } from "../types";
 
-// Every SQL statement lives here, always with ? placeholders
+// Every SQL statement lives here, always with ? placeholders.
+// The Workers free plan allows 50 D1 queries per invocation, so per run work is done in
+// bulk statements (json_each) rather than one query per row.
 const SQL = {
   getFeedState: `
     SELECT feed_url, etag, last_modified, last_checked_at, last_status, retry_after_until
@@ -19,24 +22,49 @@ const SQL = {
     ON CONFLICT(feed_url) DO UPDATE SET
       etag = excluded.etag,
       last_modified = excluded.last_modified`,
-  countSeenPosts: `SELECT COUNT(*) AS total FROM seen_posts`,
+  unblockFeed: `UPDATE feed_state SET last_status = 'unblocked' WHERE feed_url = ? AND last_status = 'blocked'`,
   findSeenPostIds: `SELECT id FROM seen_posts WHERE id IN (SELECT value FROM json_each(?))`,
-  insertSeenPost: `
-    INSERT OR IGNORE INTO seen_posts (id, title, link, published_at, seen_at)
-    VALUES (?, ?, ?, ?, ?)`,
+  insertSeenPosts: `
+    INSERT OR IGNORE INTO seen_posts (id, title, link, published_at, body_snippet, seen_at)
+    SELECT
+      json_extract(value, '$.id'),
+      json_extract(value, '$.title'),
+      json_extract(value, '$.link'),
+      json_extract(value, '$.publishedAt'),
+      json_extract(value, '$.bodySnippet'),
+      ?
+    FROM json_each(?)`,
+  pruneSeenPosts: `DELETE FROM seen_posts WHERE seen_at < ?`,
+  pruneTelegramUpdates: `DELETE FROM telegram_updates WHERE received_at < ?`,
+  pruneCounters: `DELETE FROM app_state WHERE key LIKE 'judge_calls:%' AND key < ?`,
+  getAppState: `SELECT value FROM app_state WHERE key = ?`,
+  setAppState: `
+    INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  deleteAppState: `DELETE FROM app_state WHERE key = ?`,
+  incrementCounter: `
+    INSERT INTO app_state (key, value, updated_at) VALUES (?, CAST(CAST(? AS INTEGER) AS TEXT), ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = CAST(CAST(app_state.value AS INTEGER) + CAST(excluded.value AS INTEGER) AS TEXT),
+      updated_at = excluded.updated_at`,
   ensureUser: `INSERT OR IGNORE INTO users (id, display_name, created_at) VALUES (?, ?, ?)`,
   insertWatch: `
     INSERT INTO watches (
-      user_id, label, intent_description, intent_embedding, max_price,
+      user_id, label, intent_description, intent_embedding, embedding_model, max_price,
       exclude_terms, stores, high_threshold, low_threshold, active, created_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
     RETURNING id`,
   listActiveWatches: `SELECT * FROM watches WHERE active = 1 ORDER BY id`,
   listWatchesForUser: `SELECT * FROM watches WHERE user_id = ? ORDER BY id`,
+  listActiveWatchesForUser: `SELECT * FROM watches WHERE user_id = ? AND active = 1 ORDER BY id`,
   getWatch: `SELECT * FROM watches WHERE id = ?`,
   deactivateWatch: `UPDATE watches SET active = 0 WHERE id = ? AND active = 1`,
   updateHighThreshold: `UPDATE watches SET high_threshold = ? WHERE id = ?`,
+  updateThresholds: `UPDATE watches SET high_threshold = ?, low_threshold = ? WHERE id = ?`,
+  updateWatchEmbedding: `
+    UPDATE watches SET intent_embedding = ?, embedding_model = ?, high_threshold = ?, low_threshold = ?
+    WHERE id = ?`,
   claimAlert: `
     INSERT INTO alerts (watch_id, post_id, score, used_judge, sent_at)
     VALUES (?, ?, ?, ?, ?)
@@ -53,6 +81,10 @@ const SQL = {
     WHERE a.watch_id = ?
       AND f.id = (SELECT MAX(f2.id) FROM feedback f2 WHERE f2.alert_id = a.id)
     ORDER BY a.id`,
+  claimTelegramUpdate: `INSERT OR IGNORE INTO telegram_updates (update_id, received_at) VALUES (?, ?) RETURNING update_id`,
+  listSeenPostsSince: `
+    SELECT id, title, link, published_at, body_snippet, seen_at FROM seen_posts
+    WHERE seen_at >= ? ORDER BY seen_at, id`,
 } as const;
 
 interface FeedStateRow {
@@ -70,6 +102,7 @@ interface WatchRow {
   label: string;
   intent_description: string;
   intent_embedding: string;
+  embedding_model: string;
   max_price: number | null;
   exclude_terms: string;
   stores: string;
@@ -117,28 +150,14 @@ function parseStringArray(json: string): string[] {
   return strings;
 }
 
-function parseNumberArray(json: string): number[] {
-  const parsed: unknown = JSON.parse(json);
-  if (!Array.isArray(parsed)) {
-    throw new Error("Stored embedding is not an array");
-  }
-  const numbers: number[] = [];
-  for (const item of parsed) {
-    if (typeof item !== "number") {
-      throw new Error("Stored embedding has a non number value");
-    }
-    numbers.push(item);
-  }
-  return numbers;
-}
-
 function toWatch(row: WatchRow): Watch {
   return {
     id: row.id,
     userId: row.user_id,
     label: row.label,
     intentDescription: row.intent_description,
-    intentEmbedding: parseNumberArray(row.intent_embedding),
+    intentEmbedding: decodeEmbedding(row.intent_embedding),
+    embeddingModel: row.embedding_model,
     maxPrice: row.max_price,
     excludeTerms: parseStringArray(row.exclude_terms),
     stores: parseStringArray(row.stores),
@@ -188,15 +207,13 @@ export async function saveFeedValidators(
   await db.prepare(SQL.saveFeedValidators).bind(feedUrl, etag, lastModified).run();
 }
 
-// Seen posts
-export async function countSeenPosts(db: Database): Promise<number> {
-  const row = await db.prepare(SQL.countSeenPosts).first<{ total: number }>();
-  if (!row) {
-    return 0;
-  }
-  return row.total;
+// Clears a "blocked" status so live fetches can run again. A 429 back off is left alone.
+export async function unblockFeed(db: Database, feedUrl: string): Promise<boolean> {
+  const result = await db.prepare(SQL.unblockFeed).bind(feedUrl).run();
+  return result.meta.changes > 0;
 }
 
+// Seen posts
 export async function findSeenPostIds(db: Database, postIds: string[]): Promise<Set<string>> {
   if (postIds.length === 0) {
     return new Set();
@@ -209,8 +226,96 @@ export async function findSeenPostIds(db: Database, postIds: string[]): Promise<
   return seenIds;
 }
 
-export async function insertSeenPost(db: Database, post: Post, seenAt: string): Promise<void> {
-  await db.prepare(SQL.insertSeenPost).bind(post.id, post.title, post.link, post.publishedAt, seenAt).run();
+// One statement for any number of posts
+export async function insertSeenPosts(db: Database, posts: Post[], seenAt: string, bodyChars = 500): Promise<void> {
+  if (posts.length === 0) {
+    return;
+  }
+  const rows = posts.map((post) => ({
+    id: post.id,
+    title: post.title,
+    link: post.link,
+    publishedAt: post.publishedAt,
+    bodySnippet: post.bodyText.slice(0, bodyChars),
+  }));
+  await db.prepare(SQL.insertSeenPosts).bind(seenAt, JSON.stringify(rows)).run();
+}
+
+export interface SeenPostRecord {
+  id: string;
+  title: string;
+  link: string;
+  publishedAt: string | null;
+  bodySnippet: string;
+  seenAt: string;
+}
+
+export async function listSeenPostsSince(db: Database, since: string): Promise<SeenPostRecord[]> {
+  const { results } = await db
+    .prepare(SQL.listSeenPostsSince)
+    .bind(since)
+    .all<{ id: string; title: string; link: string; published_at: string | null; body_snippet: string; seen_at: string }>();
+  return results.map((row) => ({
+    id: row.id,
+    title: row.title,
+    link: row.link,
+    publishedAt: row.published_at,
+    bodySnippet: row.body_snippet,
+    seenAt: row.seen_at,
+  }));
+}
+
+export interface PruneCutoffs {
+  seenPostsBefore: string;
+  telegramUpdatesBefore: string;
+  // judge_calls:YYYY-MM-DD keys older than this date are dropped
+  countersBeforeDate: string;
+}
+
+export async function pruneOldRecords(db: Database, cutoffs: PruneCutoffs): Promise<void> {
+  await db.prepare(SQL.pruneSeenPosts).bind(cutoffs.seenPostsBefore).run();
+  await db.prepare(SQL.pruneTelegramUpdates).bind(cutoffs.telegramUpdatesBefore).run();
+  await db.prepare(SQL.pruneCounters).bind(`judge_calls:${cutoffs.countersBeforeDate}`).run();
+}
+
+// App state (small key/value store)
+export const SEEN_INITIALIZED_KEY = "seen_initialized";
+export const OWNER_CHAT_ID_KEY = "telegram_owner_chat_id";
+
+export async function getAppState(db: Database, key: string): Promise<string | null> {
+  const row = await db.prepare(SQL.getAppState).bind(key).first<{ value: string }>();
+  return row ? row.value : null;
+}
+
+export async function setAppState(db: Database, key: string, value: string, updatedAt: string): Promise<void> {
+  await db.prepare(SQL.setAppState).bind(key, value, updatedAt).run();
+}
+
+export async function deleteAppState(db: Database, key: string): Promise<void> {
+  await db.prepare(SQL.deleteAppState).bind(key).run();
+}
+
+// Replaces COUNT(*) over seen_posts, which reads every row (D1 bills per row read)
+export async function isSeenInitialized(db: Database): Promise<boolean> {
+  return (await getAppState(db, SEEN_INITIALIZED_KEY)) !== null;
+}
+
+export async function markSeenInitialized(db: Database, updatedAt: string): Promise<void> {
+  await setAppState(db, SEEN_INITIALIZED_KEY, "1", updatedAt);
+}
+
+export function judgeCounterKey(now: Date): string {
+  return `judge_calls:${now.toISOString().slice(0, 10)}`;
+}
+
+export async function getCounter(db: Database, key: string): Promise<number> {
+  const value = await getAppState(db, key);
+  const parsed = value === null ? 0 : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export async function incrementCounter(db: Database, key: string, amount: number, updatedAt: string): Promise<void> {
+  await db.prepare(SQL.incrementCounter).bind(key, amount, updatedAt).run();
 }
 
 // Users and watches
@@ -221,7 +326,8 @@ export async function ensureUser(db: Database, userId: string, displayName: stri
 export interface NewWatch {
   userId: string;
   plan: WatchPlan;
-  intentEmbedding: number[];
+  intentEmbedding: ArrayLike<number>;
+  embeddingModel: string;
   highThreshold: number;
   lowThreshold: number;
   createdAt: string;
@@ -235,7 +341,8 @@ export async function insertWatch(db: Database, newWatch: NewWatch): Promise<num
       newWatch.userId,
       plan.label,
       plan.intentDescription,
-      JSON.stringify(newWatch.intentEmbedding),
+      encodeEmbedding(newWatch.intentEmbedding),
+      newWatch.embeddingModel,
       plan.maxPrice,
       JSON.stringify(plan.excludeTerms),
       JSON.stringify(plan.stores),
@@ -255,8 +362,9 @@ export async function listActiveWatches(db: Database): Promise<Watch[]> {
   return results.map(toWatch);
 }
 
-export async function listWatchesForUser(db: Database, userId: string): Promise<Watch[]> {
-  const { results } = await db.prepare(SQL.listWatchesForUser).bind(userId).all<WatchRow>();
+export async function listWatchesForUser(db: Database, userId: string, activeOnly = false): Promise<Watch[]> {
+  const sql = activeOnly ? SQL.listActiveWatchesForUser : SQL.listWatchesForUser;
+  const { results } = await db.prepare(sql).bind(userId).all<WatchRow>();
   return results.map(toWatch);
 }
 
@@ -275,6 +383,26 @@ export async function deactivateWatch(db: Database, watchId: number): Promise<bo
 
 export async function updateWatchHighThreshold(db: Database, watchId: number, highThreshold: number): Promise<void> {
   await db.prepare(SQL.updateHighThreshold).bind(highThreshold, watchId).run();
+}
+
+export async function updateWatchThresholds(db: Database, watchId: number, highThreshold: number, lowThreshold: number): Promise<boolean> {
+  const result = await db.prepare(SQL.updateThresholds).bind(highThreshold, lowThreshold, watchId).run();
+  return result.meta.changes > 0;
+}
+
+// New embedding means new score scale, so thresholds go back to that model's defaults
+export async function updateWatchEmbedding(
+  db: Database,
+  watchId: number,
+  intentEmbedding: ArrayLike<number>,
+  embeddingModel: string,
+  highThreshold: number,
+  lowThreshold: number,
+): Promise<void> {
+  await db
+    .prepare(SQL.updateWatchEmbedding)
+    .bind(encodeEmbedding(intentEmbedding), embeddingModel, highThreshold, lowThreshold, watchId)
+    .run();
 }
 
 // Alerts
@@ -335,4 +463,11 @@ export async function listFeedbackForWatch(db: Database, watchId: number): Promi
     feedback.push({ alertId: row.alert_id, rating: row.rating, score: row.score });
   }
   return feedback;
+}
+
+// Telegram
+// True the first time an update id is seen, false for a redelivery
+export async function claimTelegramUpdate(db: Database, updateId: number, receivedAt: string): Promise<boolean> {
+  const row = await db.prepare(SQL.claimTelegramUpdate).bind(updateId, receivedAt).first<{ update_id: number }>();
+  return row !== null;
 }

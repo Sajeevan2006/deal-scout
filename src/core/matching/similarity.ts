@@ -1,4 +1,4 @@
-export function cosineSimilarity(vectorA: number[], vectorB: number[]): number {
+export function cosineSimilarity(vectorA: ArrayLike<number>, vectorB: ArrayLike<number>): number {
   if (vectorA.length !== vectorB.length) {
     throw new Error(
       `cosineSimilarity: vector lengths differ (${vectorA.length} vs ${vectorB.length}). Were these made by different embedders?`,

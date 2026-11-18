@@ -5,10 +5,18 @@ import { applyHardFilters } from "./filters";
 import { buildMatchText } from "./postText";
 import { cosineSimilarity } from "./similarity";
 
+// Shared across one run, so borderline posts stop calling the judge once it runs out
+export interface JudgeBudget {
+  remaining: number;
+  used: number;
+}
+
 export interface MatchDeps {
   embedder: Embedder;
   judge: BorderlineJudge;
   bodyChars?: number;
+  // No budget means unlimited judge calls (eval and tests)
+  judgeBudget?: JudgeBudget;
 }
 
 function formatScore(score: number): string {
@@ -20,6 +28,7 @@ async function decideForWatch(
   postEmbedding: number[],
   watch: Watch,
   judge: BorderlineJudge,
+  judgeBudget: JudgeBudget | undefined,
 ): Promise<MatchDecision> {
   const score = cosineSimilarity(postEmbedding, watch.intentEmbedding);
   const filterResult = applyHardFilters(post, watch);
@@ -60,7 +69,32 @@ async function decideForWatch(
     };
   }
 
-  const judgeSaidYes = await judge.isMatch(post, watch);
+  if (judgeBudget !== undefined) {
+    if (judgeBudget.remaining <= 0) {
+      return {
+        ...decisionBase,
+        shouldAlert: false,
+        reason: "judge_skipped",
+        detail: `borderline score ${formatScore(score)}, judge budget used up`,
+        usedJudge: false,
+      };
+    }
+    judgeBudget.remaining -= 1;
+    judgeBudget.used += 1;
+  }
+  let judgeSaidYes: boolean;
+  try {
+    judgeSaidYes = await judge.isMatch(post, watch);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ...decisionBase,
+      shouldAlert: false,
+      reason: "judge_error",
+      detail: `borderline score ${formatScore(score)}, judge failed: ${message}`,
+      usedJudge: true,
+    };
+  }
   const borderlineDetail = `borderline score ${formatScore(score)}, judge said ${judgeSaidYes ? "yes" : "no"}`;
   return {
     ...decisionBase,
@@ -89,7 +123,7 @@ export async function matchPosts(posts: Post[], watches: Watch[], deps: MatchDep
   for (const [postIndex, post] of posts.entries()) {
     const postEmbedding = postEmbeddings[postIndex]!;
     for (const watch of watches) {
-      const decision = await decideForWatch(post, postEmbedding, watch, deps.judge);
+      const decision = await decideForWatch(post, postEmbedding, watch, deps.judge, deps.judgeBudget);
       decisions.push(decision);
     }
   }

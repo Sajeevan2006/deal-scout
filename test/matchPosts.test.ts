@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import { matchPosts } from "../src/core/matching/matchPosts";
 import type { BorderlineJudge } from "../src/core/ports/borderlineJudge";
 import type { Embedder } from "../src/core/ports/embedder";
-import { makePost, makeWatch } from "./helpers";
+import { makePost, makeWatch, TEST_EMBEDDING_MODEL } from "./helpers";
 
 // Gives each post a vector at a chosen cosine score against the watch vector [1, 0]
 function scoreEmbedder(scoresByTitle: Record<string, number>): Embedder & { calls: string[][] } {
   const calls: string[][] = [];
   return {
     calls,
+    model: TEST_EMBEDDING_MODEL,
     async embed(texts) {
       calls.push(texts);
       const vectors: number[][] = [];
@@ -115,6 +116,7 @@ describe("matchPosts", () => {
 
   it("throws when the embedder returns the wrong number of vectors", async () => {
     const brokenEmbedder: Embedder = {
+      model: TEST_EMBEDDING_MODEL,
       async embed() {
         return [[1, 0]];
       },
