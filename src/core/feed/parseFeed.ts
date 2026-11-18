@@ -1,15 +1,9 @@
-import { XMLParser } from "fast-xml-parser";
 import { consoleLogger } from "../config";
 import type { Logger, Post } from "../types";
 
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  textNodeName: "#text",
-  parseTagValue: false,
-  parseAttributeValue: false,
-  trimValues: true,
-});
+// A small Atom reader instead of a general XML parser. The RFD feed is a simple, predictable
+// document, and on the Workers free plan every run gets only 10 ms of CPU. A cold general
+// parser took ~6 ms on its own; targeted scanning takes a fraction of that.
 
 // RFD appends this footer to every post body
 const STATISTICS_FOOTER = /<p>\s*Statistics:\s*Posted by[\s\S]*?<\/p>/gi;
@@ -53,6 +47,9 @@ const NAMED_ENTITIES: Record<string, string> = {
 };
 
 export function decodeHtmlEntities(text: string): string {
+  if (!text.includes("&")) {
+    return text;
+  }
   return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (fullMatch: string, entityBody: string) => {
     if (entityBody.startsWith("#x") || entityBody.startsWith("#X")) {
       const codePoint = Number.parseInt(entityBody.slice(2), 16);
@@ -85,56 +82,139 @@ export function htmlToText(html: string): string {
   return decoded.replace(/\s+/g, " ").trim();
 }
 
-// Single elements come back as objects, repeated ones as arrays
-function toArray(value: unknown): unknown[] {
-  if (value === undefined || value === null) {
-    return [];
+const CDATA_START = "<![CDATA[";
+const CDATA_END = "]]>";
+
+// Comments go, CDATA sections stay untouched (a comment marker inside CDATA is just text)
+function stripComments(xml: string): string {
+  if (!xml.includes("<!--")) {
+    return xml;
   }
-  if (Array.isArray(value)) {
-    return value;
-  }
-  return [value];
+  return xml.replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, (section) => (section.startsWith("<!--") ? "" : section));
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+interface XmlElement {
+  attributes: Record<string, string>;
+  // Raw inner XML, null for a self closing element
+  inner: string | null;
 }
 
-function readText(node: unknown): string | null {
-  if (typeof node === "string") {
-    return node.trim();
+function parseAttributes(attributeText: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  if (!attributeText.includes("=")) {
+    return attributes;
   }
-  if (typeof node === "number") {
-    return String(node);
+  for (const match of attributeText.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+    const name = match[1]!;
+    attributes[name] = decodeHtmlEntities(match[2] ?? match[3] ?? "");
   }
-  if (isRecord(node)) {
-    return readText(node["#text"]);
-  }
-  return null;
+  return attributes;
 }
 
-function readAlternateLink(linkNode: unknown): string | null {
-  const links = toArray(linkNode);
-  for (const link of links) {
-    if (!isRecord(link)) {
+const openingTagPatterns = new Map<string, RegExp>();
+
+function openingTagPattern(tagName: string): RegExp {
+  // The name must end right there, so <content does not match <contents and <media:content is never matched
+  let pattern = openingTagPatterns.get(tagName);
+  if (pattern === undefined) {
+    pattern = new RegExp(`<${tagName}(?=[\\s/>])([^>]*?)(/?)>`, "g");
+    openingTagPatterns.set(tagName, pattern);
+  }
+  pattern.lastIndex = 0;
+  return pattern;
+}
+
+// Finds where </tagName> closes, skipping over CDATA sections that could contain anything
+function findClosingTag(xml: string, tagName: string, fromIndex: number): number {
+  const closingTag = `</${tagName}>`;
+  let searchFrom = fromIndex;
+  while (true) {
+    const closingIndex = xml.indexOf(closingTag, searchFrom);
+    const cdataIndex = xml.indexOf(CDATA_START, searchFrom);
+    if (closingIndex === -1) {
+      return -1;
+    }
+    if (cdataIndex === -1 || cdataIndex > closingIndex) {
+      return closingIndex;
+    }
+    const cdataEnd = xml.indexOf(CDATA_END, cdataIndex + CDATA_START.length);
+    if (cdataEnd === -1) {
+      return -1;
+    }
+    searchFrom = cdataEnd + CDATA_END.length;
+  }
+}
+
+function findElements(xml: string, tagName: string, limit = Infinity): XmlElement[] {
+  const elements: XmlElement[] = [];
+  const pattern = openingTagPattern(tagName);
+  let match: RegExpExecArray | null;
+  while (elements.length < limit && (match = pattern.exec(xml)) !== null) {
+    const attributes = parseAttributes(match[1] ?? "");
+    if (match[2] === "/") {
+      elements.push({ attributes, inner: null });
       continue;
     }
-    const rel = link["@_rel"];
-    const href = link["@_href"];
+    const innerStart = match.index + match[0].length;
+    const closingIndex = findClosingTag(xml, tagName, innerStart);
+    if (closingIndex === -1) {
+      break;
+    }
+    elements.push({ attributes, inner: xml.slice(innerStart, closingIndex) });
+    pattern.lastIndex = closingIndex + tagName.length + 3;
+  }
+  return elements;
+}
+
+function findElement(xml: string, tagName: string): XmlElement | null {
+  return findElements(xml, tagName, 1)[0] ?? null;
+}
+
+// Text content: CDATA kept as is, everything else XML decoded
+function elementText(element: XmlElement | null): string | null {
+  if (element === null || element.inner === null) {
+    return null;
+  }
+  let text = "";
+  let position = 0;
+  const inner = element.inner;
+  while (position < inner.length) {
+    const cdataIndex = inner.indexOf(CDATA_START, position);
+    if (cdataIndex === -1) {
+      text += decodeHtmlEntities(inner.slice(position));
+      break;
+    }
+    text += decodeHtmlEntities(inner.slice(position, cdataIndex));
+    const cdataEnd = inner.indexOf(CDATA_END, cdataIndex + CDATA_START.length);
+    if (cdataEnd === -1) {
+      text += inner.slice(cdataIndex + CDATA_START.length);
+      break;
+    }
+    text += inner.slice(cdataIndex + CDATA_START.length, cdataEnd);
+    position = cdataEnd + CDATA_END.length;
+  }
+  return text.trim();
+}
+
+function readAlternateLink(entryXml: string): string | null {
+  for (const link of findElements(entryXml, "link")) {
+    const rel = link.attributes["rel"];
+    const href = link.attributes["href"];
     const isAlternate = rel === undefined || rel === "alternate";
-    if (isAlternate && typeof href === "string" && href.length > 0) {
+    if (isAlternate && href !== undefined && href.length > 0) {
       return href;
     }
   }
   return null;
 }
 
-function readAuthor(authorNode: unknown): string | null {
-  const firstAuthor = toArray(authorNode)[0];
-  if (!isRecord(firstAuthor)) {
+function readAuthor(entryXml: string): string | null {
+  const author = findElement(entryXml, "author");
+  if (author === null || author.inner === null) {
     return null;
   }
-  return readText(firstAuthor["name"]);
+  const name = elementText(findElement(author.inner, "name"));
+  return name && name.length > 0 ? name : null;
 }
 
 function toIsoDate(text: string | null): string | null {
@@ -148,46 +228,43 @@ function toIsoDate(text: string | null): string | null {
   return new Date(parsedMs).toISOString();
 }
 
-function parseEntry(entry: unknown): Post | string {
-  if (!isRecord(entry)) {
-    return "entry is not an element";
-  }
-  const id = readText(entry["id"]);
+function parseEntry(entryXml: string): Post | string {
+  const id = elementText(findElement(entryXml, "id"));
   if (!id) {
     return "missing <id>";
   }
-  const rawTitle = readText(entry["title"]);
+  const rawTitle = elementText(findElement(entryXml, "title"));
   if (!rawTitle) {
     return `missing <title> (id ${id})`;
   }
-  const link = readAlternateLink(entry["link"]);
+  const link = readAlternateLink(entryXml);
   if (!link) {
     return `missing <link> (id ${id})`;
   }
-  let bodyHtml = readText(entry["content"]);
+  let bodyHtml = elementText(findElement(entryXml, "content"));
   if (bodyHtml === null) {
-    bodyHtml = readText(entry["summary"]) ?? "";
+    bodyHtml = elementText(findElement(entryXml, "summary")) ?? "";
   }
   return {
     id,
     title: htmlToText(rawTitle),
     link,
-    author: readAuthor(entry["author"]),
-    publishedAt: toIsoDate(readText(entry["published"])),
-    updatedAt: toIsoDate(readText(entry["updated"])),
+    author: readAuthor(entryXml),
+    publishedAt: toIsoDate(elementText(findElement(entryXml, "published"))),
+    updatedAt: toIsoDate(elementText(findElement(entryXml, "updated"))),
     bodyText: htmlToText(bodyHtml),
   };
 }
 
 export function parseFeed(xml: string, logger: Logger = consoleLogger): Post[] {
-  const document: unknown = xmlParser.parse(xml);
-  if (!isRecord(document) || !isRecord(document["feed"])) {
+  const document = stripComments(xml);
+  const feed = findElement(document, "feed");
+  if (feed === null || feed.inner === null) {
     throw new Error("Not an Atom feed: no <feed> root element");
   }
-  const entries = toArray(document["feed"]["entry"]);
   const posts: Post[] = [];
-  for (const [entryIndex, entry] of entries.entries()) {
-    const parsed = parseEntry(entry);
+  for (const [entryIndex, entry] of findElements(feed.inner, "entry").entries()) {
+    const parsed = parseEntry(entry.inner ?? "");
     if (typeof parsed === "string") {
       logger.warn(`Skipping malformed feed entry #${entryIndex + 1}: ${parsed}`);
       continue;
