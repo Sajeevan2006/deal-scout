@@ -52,7 +52,7 @@ export const FAKE_EMBEDDING_MODEL = "local/fake-hash-256";
 export const defaultConfig: DealScoutConfig = {
   feedUrl: "https://forums.redflagdeals.com/feed/forum/9",
   allowedFeedHost: "forums.redflagdeals.com",
-  userAgent: "DealScout/0.1 (personal use, contact me@example.com)",
+  userAgent: "DealScout/0.2 (personal use)",
   minFetchIntervalMs: MIN_FETCH_INTERVAL_MS,
   maxRedirects: 3,
   errorRetryCount: 2,

@@ -27,6 +27,7 @@ export interface Env {
   DB?: Database;
   AI?: AiBinding;
   // [vars] in wrangler.toml
+  // Optional: adds "contact <email>" to the User-Agent
   CONTACT_EMAIL?: string;
   EMBEDDING_MODEL?: string;
   LLM_PROVIDER?: string;
@@ -68,15 +69,17 @@ export function embeddingModelFromEnv(env: Env): string {
   return env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
 }
 
-export function configFromEnv(env: Env): DealScoutConfig {
-  const contact = env.CONTACT_EMAIL?.trim() ?? "";
-  if (PLACEHOLDER_CONTACTS.has(contact)) {
-    throw new ConfigError(
-      "Set CONTACT_EMAIL under [vars] in wrangler.toml. It goes in the User-Agent so RFD can reach you if something goes wrong.",
-    );
+export function userAgentFor(contact: string | undefined): string {
+  const trimmed = contact?.trim() ?? "";
+  if (PLACEHOLDER_CONTACTS.has(trimmed)) {
+    return "DealScout/0.2 (personal use)";
   }
+  return `DealScout/0.2 (personal use, contact ${trimmed})`;
+}
+
+export function configFromEnv(env: Env): DealScoutConfig {
   const base = buildConfig({
-    userAgent: `DealScout/0.2 (personal use, contact ${contact})`,
+    userAgent: userAgentFor(env.CONTACT_EMAIL),
     // A cron run should not sleep minutes waiting to retry; the next run 10 minutes later retries
     errorRetryCount: 0,
   });

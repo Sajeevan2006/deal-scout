@@ -51,7 +51,8 @@ export function captureStateKey(feedUrl: string): string {
 }
 
 export function loadLocalConfig(): DealScoutConfig {
-  const contact = process.env.DEAL_SCOUT_CONTACT;
+  // Optional contact for the User-Agent
+  const contact = process.env.DEAL_SCOUT_CONTACT?.trim();
   if (contact) {
     return buildConfig({ userAgent: `DealScout/0.2 (personal use, contact ${contact})` });
   }

@@ -6,7 +6,7 @@ import { getAppState, getFeedState, listActiveWatches, OWNER_CHAT_ID_KEY, record
 import type { Notifier } from "../src/core/ports/notifier";
 import type { Clock, DealAlert } from "../src/core/types";
 import { createRuleWatchPlanner } from "../src/core/watches/rulePlanner";
-import { buildDepsFromEnv, ConfigError, configFromEnv, type Env, type WorkerDeps } from "../src/worker/deps";
+import { buildDepsFromEnv, configFromEnv, type Env, type WorkerDeps } from "../src/worker/deps";
 import { createWorker } from "../src/worker/index";
 import type { ExecutionContextLike } from "../src/worker/routes";
 import { createFakeEmbedder } from "../src/local/fakeEmbedder";
@@ -271,10 +271,10 @@ describe("scheduled", () => {
 });
 
 describe("configuration from env", () => {
-  it("requires a real CONTACT_EMAIL", () => {
-    expect(() => configFromEnv({})).toThrow(ConfigError);
-    expect(() => configFromEnv({ CONTACT_EMAIL: "me@example.com" })).toThrow(/CONTACT_EMAIL/);
-    expect(configFromEnv({ CONTACT_EMAIL: "a@b.org" }).userAgent).toContain("contact a@b.org");
+  it("only adds a contact to the User-Agent when one is given", () => {
+    expect(configFromEnv({}).userAgent).toBe("DealScout/0.2 (personal use)");
+    expect(configFromEnv({ CONTACT_EMAIL: "me@example.com" }).userAgent).toBe("DealScout/0.2 (personal use)");
+    expect(configFromEnv({ CONTACT_EMAIL: "a@b.org" }).userAgent).toBe("DealScout/0.2 (personal use, contact a@b.org)");
   });
 
   it("never sleeps to retry inside a cron run", () => {

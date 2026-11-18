@@ -1,4 +1,4 @@
-# Copy this file to wrangler.toml, then fill in database_id and CONTACT_EMAIL.
+# Copy this file to wrangler.toml, then fill in database_id.
 # Everything here fits the Cloudflare free plan. See the README for the full setup.
 
 name = "deal-scout"
@@ -26,10 +26,8 @@ binding = "AI"
 enabled = true
 
 [vars]
-# Required. Goes in the User-Agent so RFD can contact you if something goes wrong.
-CONTACT_EMAIL = "me@example.com"
-
 # Optional settings (defaults shown)
+# CONTACT_EMAIL = ""                   # adds "contact <email>" to the User-Agent, if you want RFD to be able to reach you
 # EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
 # LLM_PROVIDER = "workers-ai"          # or "anthropic" (then: wrangler secret put ANTHROPIC_API_KEY)
 # PLANNER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"   # claude-haiku-5-5 with anthropic

@@ -78,8 +78,7 @@ npx wrangler d1 create deal-scout
 cp wrangler.toml.example wrangler.toml
 ```
 
-In `wrangler.toml`, paste the `database_id` printed by the first command and set `CONTACT_EMAIL` to a real address
-(it goes in the User-Agent so RFD can reach you if something goes wrong). `wrangler.toml` is gitignored.
+In `wrangler.toml`, paste the `database_id` printed by the first command. `wrangler.toml` is gitignored.
 
 **3. Create the tables**
 
@@ -234,7 +233,8 @@ If you ever outgrow it, Workers Paid ($5/month) raises the cron CPU limit to 30 
 
 ## Being a good citizen with the feed
 
-- Only the Atom feed URL is ever requested, with an honest User-Agent that includes `CONTACT_EMAIL`.
+- Only the Atom feed URL is ever requested, with an honest User-Agent (`DealScout/0.2 (personal use)`). Setting the
+  optional `CONTACT_EMAIL` var adds a contact to it.
 - **2 minute guard**: a live request is refused if the last one (`feed_state.last_checked_at`) was under 2 minutes
   ago. The cron runs every 10.
 - **Conditional requests**: `Last-Modified` / `ETag` are sent back, so an unchanged feed is a cheap 304.
@@ -273,7 +273,6 @@ or Anthropic credentials in `.env` it uses the real models over their REST APIs.
 
 ## Troubleshooting
 
-- **`Configuration problem: Set CONTACT_EMAIL ...`**: set a real `CONTACT_EMAIL` in `wrangler.toml` and redeploy.
 - **Alerts only show in the logs**: Telegram isn't configured or not paired. `npm run remote -- telegram:status`.
 - **The bot doesn't answer**: check `npm run remote -- telegram:status` (webhook URL, last error), and that you
   paired with `/start <PAIRING_CODE>` exactly.
