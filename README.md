@@ -25,25 +25,13 @@ optional swap for the LLM parts.
 
 ```mermaid
 flowchart TD
-  subgraph check["Every 10 minutes"]
-    cron(["Cloudflare Cron"]) --> fetch["Fetch RFD Atom feed<br/>304 aware, 2 min guard"]
-    fetch --> parse["Parse, drop posts already seen"]
-    parse --> embed["Embed new posts<br/>Workers AI bge-base"]
-    embed --> score["Score vs watches + hard filters<br/>price, store, excluded words"]
-    score -->|"score ≥ high"| alert["Claim alert<br/>once per watch + post"]
-    score -->|"in between"| judge["LLM judge<br/>capped per run and day"]
-    judge -->|yes| alert
-    alert --> notify["Telegram, or logs<br/>with 👍 / 👎"]
-  end
-
-  subgraph ask["When you message the bot"]
-    you(["You: portable charger under $60"]) --> hook["Telegram webhook<br/>secret checked"]
-    hook --> planner["LLM planner<br/>synonyms, brands, price limit"]
-  end
-
-  planner --> watches[("D1: watches")]
-  watches -.-> score
-  notify -.->|"👎 raises threshold"| watches
+  you(["You"]) -->|"portable charger under $60"| planner["LLM turns it into a watch"]
+  planner --> watches[("Your watches")]
+  cron(["Every 10 minutes"]) --> feed["New posts from<br/>RFD Hot Deals"]
+  feed --> match["Match by meaning<br/>LLM double checks close calls"]
+  watches --> match
+  match -->|"match"| alert["Telegram alert<br/>👍 / 👎"]
+  alert --> you
 ```
 
 ## Setup
@@ -70,31 +58,19 @@ Telegram and Claude are optional. Without Telegram, alerts go to `npm run logs`.
 
 ```mermaid
 sequenceDiagram
-  participant Cron as Cloudflare Cron
-  participant W as Worker
-  participant RFD as RFD feed
-  participant DB as D1
-  participant AI as Workers AI
-  participant TG as Telegram
+  actor You
+  participant DS as Deal Scout
+  participant RFD as RFD Hot Deals
 
-  Cron->>W: scheduled, every 10 min
-  W->>DB: load feed state
-  W->>RFD: GET feed (If-Modified-Since)
-  alt 304, too soon, or blocked
-    RFD-->>W: nothing new
-    W->>DB: record the check and stop
-  else new posts
-    RFD-->>W: Atom XML
-    W->>DB: which posts are new?
-    W->>AI: embed new posts in one batch
-    W->>W: score and hard filter
-    opt borderline score
-      W->>AI: judge, is this a match?
-    end
-    W->>DB: claim alert (never twice)
-    W->>TG: send alert with 👍 / 👎
-    W->>DB: mark posts seen, save Last-Modified
+  You->>DS: portable charger under $60
+  DS-->>You: ✅ Now watching "Portable charger"
+  loop every 10 minutes
+    DS->>RFD: any new posts?
+    RFD-->>DS: new posts
+    DS->>DS: match against your watches
   end
+  DS-->>You: 🔔 [Amazon.ca] Anker Power Bank $29.99
+  You->>DS: 👍 or 👎
 ```
 
 ## Try it

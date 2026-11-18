@@ -2,6 +2,39 @@
 
 ## How a check works
 
+The detailed view of one cron run:
+
+```mermaid
+sequenceDiagram
+  participant Cron as Cloudflare Cron
+  participant W as Worker
+  participant RFD as RFD feed
+  participant DB as D1
+  participant AI as Workers AI
+  participant TG as Telegram
+
+  Cron->>W: scheduled, every 10 min
+  W->>DB: load feed state
+  W->>RFD: GET feed (If-Modified-Since)
+  alt 304, too soon, or blocked
+    RFD-->>W: nothing new
+    W->>DB: record the check and stop
+  else new posts
+    RFD-->>W: Atom XML
+    W->>DB: which posts are new?
+    W->>AI: embed new posts in one batch
+    W->>W: score and hard filter
+    opt borderline score
+      W->>AI: judge, is this a match?
+    end
+    W->>DB: claim alert (never twice)
+    W->>TG: send alert with 👍 / 👎
+    W->>DB: mark posts seen, save Last-Modified
+  end
+```
+
+Step by step:
+
 1. Fetch the feed with `If-Modified-Since`. Anything other than a fresh feed (304, too soon, 429, block, error) ends
    the run. A cron run never sleeps to retry, the next run 10 minutes later does.
 2. Parse the Atom entries and keep the posts not in `seen_posts`.
