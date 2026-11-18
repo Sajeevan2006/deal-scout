@@ -19,6 +19,10 @@ it, deploy it to your own Cloudflare account, pair your own Telegram bot.
 > **Status: match thresholds are still being tuned.** The defaults work but aren't calibrated yet, so expect some
 > borderline posts to need the LLM judge and the occasional miss or false alert. See
 > [Tuning thresholds with the eval](#tuning-thresholds-with-the-eval).
+>
+> **Status: Telegram is in progress and may not work as expected.** The bot is built and tested against a mocked
+> Telegram API, but hasn't been tried with a real bot yet. Without it, alerts still show up in the Worker logs. See
+> [Telegram](#telegram).
 
 ## Contents
 
@@ -127,6 +131,11 @@ npm run logs                                           # live Worker logs, alert
 That's a working deployment. Next, set up Telegram so alerts reach your phone.
 
 ## Telegram
+
+> **In progress, may not work as expected.** The bot logic, webhook check and buttons are covered by tests against a
+> mocked Telegram API, but setting up a real bot hasn't been tested end to end yet (webhook registration, message
+> formatting, button callbacks). If something misbehaves, alerts are still in `npm run logs`, and
+> `npm run remote -- telegram:status` shows Telegram's last webhook error.
 
 1. In Telegram, message [@BotFather](https://t.me/BotFather), send `/newbot` and follow the prompts. It gives you a
    bot token like `123456789:AA...`.
