@@ -6,6 +6,7 @@ import {
   getFeedState,
   incrementCounter,
   insertSeenPosts,
+  retryCounterKey,
   isSeenInitialized,
   judgeCounterKey,
   listActiveWatches,
@@ -38,6 +39,8 @@ export interface FeedCheckDeps {
 }
 
 export interface FeedCheckOptions {
+  // Score every post currently in the feed, not only new ones (alerts are still never repeated).
+  // Also skips If-Modified-Since so the full feed comes back.
   alertExisting?: boolean;
 }
 
@@ -54,8 +57,11 @@ export interface FeedCheckSummary {
   judgeCalls: number;
   judgeErrors: number;
   judgeSkipped: number;
-  // Posts whose alert could not be sent. They stay unseen so the next run tries again.
+  // New posts whose alert couldn't be sent or whose judge call failed. They stay unseen so the
+  // next run tries again, up to config.maxPostAttempts.
   retryPostIds: string[];
+  // Posts dropped after too many failed attempts
+  gaveUpPostIds: string[];
   // When the next live request makes sense (rate limit or guard)
   retryInSeconds: number | null;
   decisions: MatchDecision[];
@@ -78,6 +84,7 @@ function emptySummary(outcome: FeedFetchOutcome, message: string): FeedCheckSumm
     judgeErrors: 0,
     judgeSkipped: 0,
     retryPostIds: [],
+    gaveUpPostIds: [],
     retryInSeconds: null,
     decisions: [],
   };
@@ -208,7 +215,10 @@ async function matchAndAlert(deps: FeedCheckDeps, newPosts: Post[], summary: Fee
     }
     if (decision.reason === "judge_error") {
       summary.judgeErrors += 1;
-      logger.warn(`Judge failed for "${decision.post.title}" vs "${decision.watch.label}": ${decision.detail}`);
+      logger.warn(`Judge failed for "${decision.post.title}" vs "${decision.watch.label}", will retry: ${decision.detail}`);
+      if (!summary.retryPostIds.includes(decision.post.id)) {
+        summary.retryPostIds.push(decision.post.id);
+      }
     }
     if (decision.reason === "judge_skipped") {
       summary.judgeSkipped += 1;
@@ -218,7 +228,15 @@ async function matchAndAlert(deps: FeedCheckDeps, newPosts: Post[], summary: Fee
     }
     summary.matched += 1;
     const sentAt = clock.now().toISOString();
-    const alertId = await claimAlert(db, decision.watch.id, decision.post.id, decision.score, decision.usedJudge, sentAt);
+    const alertId = await claimAlert(
+      db,
+      decision.watch.id,
+      decision.post.id,
+      decision.score,
+      decision.usedJudge,
+      sentAt,
+      decision.watch.embeddingModel,
+    );
     if (alertId === null) {
       summary.duplicatesSkipped += 1;
       continue;
@@ -240,11 +258,34 @@ async function matchAndAlert(deps: FeedCheckDeps, newPosts: Post[], summary: Fee
   }
 }
 
+// Only new posts can be retried (already seen ones were handled before). Each post gets at most
+// config.maxPostAttempts tries in total, so one that always fails can't make every run redo work.
+async function applyRetryLimit(deps: FeedCheckDeps, newPosts: Post[], summary: FeedCheckSummary): Promise<void> {
+  const newIds = new Set(newPosts.map((post) => post.id));
+  const keep: string[] = [];
+  for (const postId of summary.retryPostIds) {
+    if (!newIds.has(postId)) {
+      continue;
+    }
+    const key = retryCounterKey(postId);
+    const attempts = (await getCounter(deps.db, key)) + 1;
+    if (attempts >= deps.config.maxPostAttempts) {
+      summary.gaveUpPostIds.push(postId);
+      deps.logger.warn(`Giving up on ${postId} after ${attempts} attempts.`);
+      continue;
+    }
+    await incrementCounter(deps.db, key, 1, deps.clock.now().toISOString());
+    keep.push(postId);
+  }
+  summary.retryPostIds = keep;
+}
+
 function pruneCutoffs(now: Date, config: DealScoutConfig) {
   const nowMs = now.getTime();
   return {
     seenPostsBefore: new Date(nowMs - config.seenPostRetentionDays * DAY_MS).toISOString(),
     telegramUpdatesBefore: new Date(nowMs - 2 * DAY_MS).toISOString(),
+    retryCountersBefore: new Date(nowMs - 7 * DAY_MS).toISOString(),
     countersBeforeDate: new Date(nowMs - 7 * DAY_MS).toISOString().slice(0, 10),
   };
 }
@@ -253,9 +294,10 @@ export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOption
   const { db, feedSource, logger, clock, config } = deps;
   const feedUrl = feedSource.feedUrl;
 
-  // 1. Load state and fetch
+  // 1. Load state and fetch. --alert-existing wants the whole feed, so no If-Modified-Since.
   const feedState = await getFeedState(db, feedUrl);
-  const fetchResult = await feedSource.fetchLatest(feedState);
+  const fetchState = options.alertExisting === true ? { ...feedState, etag: null, lastModified: null } : feedState;
+  const fetchResult = await feedSource.fetchLatest(fetchState);
   await recordFetchAttempt(db, feedUrl, fetchResult, config);
   // The fetcher already logged the outcome, callers print summary.message
   if (fetchResult.outcome !== "ok") {
@@ -295,9 +337,11 @@ export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOption
   }
 
   // 4. Match and alert. Posts are only marked seen after this works, so a failed embedding
-  // call means they get retried next run instead of being lost.
+  // call means they get retried next run instead of being lost. --alert-existing scores
+  // everything in the feed; claimAlert still stops repeats.
+  const postsToMatch = options.alertExisting === true ? fetchedPosts : newPosts;
   try {
-    await matchAndAlert(deps, newPosts, summary);
+    await matchAndAlert(deps, postsToMatch, summary);
   } catch (error) {
     // Forget the validators so the next run gets the full feed instead of a 304
     await saveFeedValidators(db, feedUrl, null, null);
@@ -308,8 +352,9 @@ export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOption
     return summary;
   }
 
-  // 5. Remember the posts, then the validators, then tidy up. Posts whose alert failed stay
+  // 5. Remember the posts, then the validators, then tidy up. Posts that need another try stay
   // unseen, and the validators are dropped so the next run gets the full feed again.
+  await applyRetryLimit(deps, newPosts, summary);
   const now = clock.now();
   const handledPosts = newPosts.filter((post) => !summary.retryPostIds.includes(post.id));
   await insertSeenPosts(db, handledPosts, now.toISOString(), config.storedBodyChars);
@@ -330,6 +375,8 @@ export async function runFeedCheck(deps: FeedCheckDeps, options: FeedCheckOption
     (summary.judgeErrors > 0 ? `, judge errors ${summary.judgeErrors}` : "") +
     (summary.judgeSkipped > 0 ? `, judge skipped ${summary.judgeSkipped}` : "") +
     (summary.duplicatesSkipped > 0 ? `, duplicates skipped ${summary.duplicatesSkipped}` : "") +
-    (summary.failedAlerts > 0 ? `, failed alerts ${summary.failedAlerts}` : "");
+    (summary.failedAlerts > 0 ? `, failed alerts ${summary.failedAlerts}` : "") +
+    (summary.retryPostIds.length > 0 ? `, retrying ${summary.retryPostIds.length} posts next run` : "") +
+    (summary.gaveUpPostIds.length > 0 ? `, gave up on ${summary.gaveUpPostIds.length} posts` : "");
   return summary;
 }

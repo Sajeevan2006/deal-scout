@@ -400,19 +400,79 @@ describe("runFeedCheck judge budget", () => {
     expect(summary.judgeSkipped).toBe(14);
   });
 
-  it("counts judge errors as no alert without failing the run", async () => {
+  it("retries posts whose judge call failed, then judges them on the next run", async () => {
+    await addBoseWatch();
+    let judgeUp = false;
+    const flakyJudge: BorderlineJudge = {
+      async isMatch(post) {
+        if (!judgeUp) {
+          throw new Error("JSON Mode couldn't be met");
+        }
+        return post.title === BOSE_TITLE;
+      },
+    };
+    const bothBorderline: Embedder = {
+      model: TEST_EMBEDDING_MODEL,
+      async embed(texts) {
+        return texts.map((text) => (text.includes("Bose") || text.includes("Ninja") ? [0.6, 0.8] : [0, 1]));
+      },
+    };
+    const feedSource = createFileFeedSource(realFeedPath);
+    const first = await runFeedCheck(depsWith(feedSource, { embedder: bothBorderline, judge: flakyJudge }), { alertExisting: true });
+    expect(first).toMatchObject({ outcome: "ok", judgeErrors: 2, alerted: 0 });
+    expect(first.retryPostIds).toHaveLength(2);
+    expect(await countRows("seen_posts")).toBe(13);
+
+    judgeUp = true;
+    const second = await runFeedCheck(depsWith(feedSource, { embedder: bothBorderline, judge: flakyJudge }));
+    expect(second).toMatchObject({ newPosts: 2, judgeCalls: 2, alerted: 1, retryPostIds: [] });
+    expect(notifier.alerts.map((alert) => alert.post.title)).toEqual([BOSE_TITLE]);
+    expect(await countRows("seen_posts")).toBe(15);
+  });
+
+  it("gives up on a post after the maximum number of attempts", async () => {
     await addBoseWatch();
     const brokenJudge: BorderlineJudge = {
       async isMatch() {
-        throw new Error("JSON Mode couldn't be met");
+        throw new Error("still down");
       },
     };
-    const summary = await runFeedCheck(
-      depsWith(createFileFeedSource(realFeedPath), { embedder: borderlineEmbedder, judge: brokenJudge, config: buildConfig({ maxJudgeCallsPerRun: 2 }) }),
-      { alertExisting: true },
-    );
-    expect(summary).toMatchObject({ outcome: "ok", judgeErrors: 2, alerted: 0 });
+    const feedSource = createFileFeedSource(realFeedPath);
+    const run = () => runFeedCheck(depsWith(feedSource, { embedder: borderlineEmbedder, judge: brokenJudge, config: buildConfig({ maxPostAttempts: 2 }) }), { alertExisting: true });
+    const first = await run();
+    expect(first.retryPostIds.length).toBeGreaterThan(0);
+    const second = await run();
+    expect(second.retryPostIds).toEqual([]);
+    expect(second.gaveUpPostIds.length).toBe(first.retryPostIds.length);
+    expect(second.message).toMatch(/gave up on/);
     expect(await countRows("seen_posts")).toBe(15);
+  });
+});
+
+describe("runFeedCheck --alert-existing after the first run", () => {
+  it("re-scores every post in the feed without repeating alerts", async () => {
+    const feedSource = createFileFeedSource(realFeedPath);
+    // The cron's first run already marked everything seen, before any watch existed
+    await runFeedCheck(depsWith(feedSource));
+    await addBoseWatch();
+    expect((await runFeedCheck(depsWith(feedSource))).alerted).toBe(0);
+
+    const rescored = await runFeedCheck(depsWith(feedSource), { alertExisting: true });
+    expect(rescored).toMatchObject({ firstRun: false, newPosts: 0, alerted: 1 });
+    expect(notifier.alerts[0]!.post.title).toBe(BOSE_TITLE);
+
+    const again = await runFeedCheck(depsWith(feedSource), { alertExisting: true });
+    expect(again).toMatchObject({ alerted: 0, duplicatesSkipped: 1 });
+  });
+
+  it("asks for the full feed instead of a 304", async () => {
+    const { readFileSync } = await import("node:fs");
+    const xml = readFileSync(realFeedPath, "utf8");
+    const ok: FeedFetchResult = { outcome: "ok", xml, etag: "e1", lastModified: "Sun, 25 Oct 2026 22:37:46 GMT", requestedAt: null };
+    const source = scriptedSource([ok, ok]);
+    await runFeedCheck(depsWith(source));
+    await runFeedCheck(depsWith(source), { alertExisting: true });
+    expect(source.statesSeen[1]!).toMatchObject({ etag: null, lastModified: null });
   });
 });
 

@@ -41,6 +41,9 @@ export interface DealScoutConfig {
   maxJudgeCallsPerDay: number;
   // seen_posts rows older than this are deleted. The feed only holds about a day of posts.
   seenPostRetentionDays: number;
+  // A post whose alert couldn't be sent, or whose judge call failed, is retried on later runs
+  // up to this many attempts in total, then given up on
+  maxPostAttempts: number;
   thresholdTuning: ThresholdTuningConfig;
 }
 
@@ -76,6 +79,7 @@ export const defaultConfig: DealScoutConfig = {
   maxJudgeCallsPerRun: 8,
   maxJudgeCallsPerDay: 300,
   seenPostRetentionDays: 30,
+  maxPostAttempts: 3,
   thresholdTuning: {
     minDownVotes: 3,
     margin: 0.02,

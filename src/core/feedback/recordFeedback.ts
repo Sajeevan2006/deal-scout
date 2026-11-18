@@ -36,7 +36,7 @@ export async function recordAlertFeedback(
   if (watch === null) {
     return { alert, watch: null, previousHighThreshold: null, suggestion: null };
   }
-  const feedback = await listFeedbackForWatch(db, watch.id);
+  const feedback = await listFeedbackForWatch(db, watch.id, watch.embeddingModel);
   const suggestion = suggestThreshold(watch, feedback, tuning);
   if (suggestion.changed) {
     await updateWatchHighThreshold(db, watch.id, suggestion.highThreshold);

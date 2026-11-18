@@ -37,6 +37,7 @@ const SQL = {
   pruneSeenPosts: `DELETE FROM seen_posts WHERE seen_at < ?`,
   pruneTelegramUpdates: `DELETE FROM telegram_updates WHERE received_at < ?`,
   pruneCounters: `DELETE FROM app_state WHERE key LIKE 'judge_calls:%' AND key < ?`,
+  pruneRetryCounters: `DELETE FROM app_state WHERE (key LIKE 'retry:%' OR key LIKE 'pairing_attempts:%') AND updated_at < ?`,
   getAppState: `SELECT value FROM app_state WHERE key = ?`,
   setAppState: `
     INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
@@ -66,19 +67,20 @@ const SQL = {
     UPDATE watches SET intent_embedding = ?, embedding_model = ?, high_threshold = ?, low_threshold = ?
     WHERE id = ?`,
   claimAlert: `
-    INSERT INTO alerts (watch_id, post_id, score, used_judge, sent_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO alerts (watch_id, post_id, score, used_judge, sent_at, embedding_model)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(watch_id, post_id) DO NOTHING
     RETURNING id`,
   releaseAlert: `DELETE FROM alerts WHERE id = ?`,
   getAlert: `SELECT id, watch_id, post_id, score, used_judge, sent_at FROM alerts WHERE id = ?`,
   insertFeedback: `INSERT INTO feedback (alert_id, rating, created_at) VALUES (?, ?, ?) RETURNING id`,
-  // Latest rating per alert, so changing your mind doesn't double count
+  // Latest rating per alert, so changing your mind doesn't double count. Only alerts scored by
+  // the watch's current embedding model count, since scores from another model use another scale.
   listFeedbackForWatch: `
     SELECT a.id AS alert_id, f.rating AS rating, a.score AS score
     FROM alerts a
     JOIN feedback f ON f.alert_id = a.id
-    WHERE a.watch_id = ?
+    WHERE a.watch_id = ? AND a.embedding_model = ?
       AND f.id = (SELECT MAX(f2.id) FROM feedback f2 WHERE f2.alert_id = a.id)
     ORDER BY a.id`,
   claimTelegramUpdate: `INSERT OR IGNORE INTO telegram_updates (update_id, received_at) VALUES (?, ?) RETURNING update_id`,
@@ -268,6 +270,7 @@ export async function listSeenPostsSince(db: Database, since: string): Promise<S
 export interface PruneCutoffs {
   seenPostsBefore: string;
   telegramUpdatesBefore: string;
+  retryCountersBefore: string;
   // judge_calls:YYYY-MM-DD keys older than this date are dropped
   countersBeforeDate: string;
 }
@@ -276,6 +279,7 @@ export async function pruneOldRecords(db: Database, cutoffs: PruneCutoffs): Prom
   await db.prepare(SQL.pruneSeenPosts).bind(cutoffs.seenPostsBefore).run();
   await db.prepare(SQL.pruneTelegramUpdates).bind(cutoffs.telegramUpdatesBefore).run();
   await db.prepare(SQL.pruneCounters).bind(`judge_calls:${cutoffs.countersBeforeDate}`).run();
+  await db.prepare(SQL.pruneRetryCounters).bind(cutoffs.retryCountersBefore).run();
 }
 
 // App state (small key/value store)
@@ -302,6 +306,10 @@ export async function isSeenInitialized(db: Database): Promise<boolean> {
 
 export async function markSeenInitialized(db: Database, updatedAt: string): Promise<void> {
   await setAppState(db, SEEN_INITIALIZED_KEY, "1", updatedAt);
+}
+
+export function retryCounterKey(postId: string): string {
+  return `retry:${postId}`;
 }
 
 export function judgeCounterKey(now: Date): string {
@@ -414,9 +422,13 @@ export async function claimAlert(
   score: number,
   usedJudge: boolean,
   sentAt: string,
+  embeddingModel: string,
 ): Promise<number | null> {
   const usedJudgeFlag = usedJudge ? 1 : 0;
-  const row = await db.prepare(SQL.claimAlert).bind(watchId, postId, score, usedJudgeFlag, sentAt).first<{ id: number }>();
+  const row = await db
+    .prepare(SQL.claimAlert)
+    .bind(watchId, postId, score, usedJudgeFlag, sentAt, embeddingModel)
+    .first<{ id: number }>();
   if (!row) {
     return null;
   }
@@ -456,8 +468,8 @@ export async function insertFeedback(
   return row.id;
 }
 
-export async function listFeedbackForWatch(db: Database, watchId: number): Promise<FeedbackWithScore[]> {
-  const { results } = await db.prepare(SQL.listFeedbackForWatch).bind(watchId).all<FeedbackRow>();
+export async function listFeedbackForWatch(db: Database, watchId: number, embeddingModel: string): Promise<FeedbackWithScore[]> {
+  const { results } = await db.prepare(SQL.listFeedbackForWatch).bind(watchId, embeddingModel).all<FeedbackRow>();
   const feedback: FeedbackWithScore[] = [];
   for (const row of results) {
     feedback.push({ alertId: row.alert_id, rating: row.rating, score: row.score });
