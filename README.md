@@ -71,12 +71,12 @@ sequenceDiagram
   You->>DS: 👍 or 👎
 ```
 
-## Try it
+## Try it locally
 
 ```bash
-npm run remote -- watch "portable charger under \$60, no cables"
-npm run remote -- check --alert-existing
-npm run logs
+npm install
+npm run watch:add -- "ninja dual brew coffee maker"
+npm run check -- --file test/fixtures/hot-deals-feed.xml --alert-existing --verbose
 ```
 
 `--alert-existing` scores every post currently in the feed (roughly the last day), not just new ones, so you see
